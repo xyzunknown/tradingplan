@@ -1,0 +1,9 @@
+{
+  "name": "cross-market-screener-beta",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Multi-strategy cross-market asset screener beta",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

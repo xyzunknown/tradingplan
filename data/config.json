@@ -1,0 +1,31 @@
+{
+  "bots": [
+    {
+      "name": "Alpha",
+      "token": "",
+      "chatId": "",
+      "enabled": true,
+      "rule": "score>=2.5"
+    },
+    {
+      "name": "Beta",
+      "token": "",
+      "chatId": "",
+      "enabled": true,
+      "rule": "counter_trend"
+    },
+    {
+      "name": "System",
+      "token": "",
+      "chatId": "",
+      "enabled": true,
+      "rule": "system_report"
+    }
+  ],
+  "switches": {
+    "trend": true,
+    "counterTrend": true
+  },
+  "tolerancePct": 0.2,
+  "dedupeHours": 24
+}

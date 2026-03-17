@@ -1,0 +1,146 @@
+{
+  "snapshots": [
+    {
+      "at": "2026-03-06T08:14:14.941Z",
+      "totalAssets": 7,
+      "totalSignals": 10,
+      "winRate": 60,
+      "avgRr": -783.05,
+      "maxDd": 100,
+      "rows": [
+        {
+          "asset": "USDCUSDT",
+          "market": "crypto",
+          "total": 2,
+          "winRate": 50,
+          "avgRr": 0.25,
+          "maxDd": 50
+        },
+        {
+          "asset": "USD1USDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 0,
+          "avgRr": -1,
+          "maxDd": 100
+        },
+        {
+          "asset": "FDUSDUSDT",
+          "market": "crypto",
+          "total": 3,
+          "winRate": 33.33,
+          "avgRr": -0.17,
+          "maxDd": 66.67
+        },
+        {
+          "asset": "PEPEUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 0,
+          "maxDd": 0
+        },
+        {
+          "asset": "ADAUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        },
+        {
+          "asset": "AVAXUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        },
+        {
+          "asset": "ARE",
+          "market": "us",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": -7832.51,
+          "maxDd": 0
+        }
+      ]
+    },
+    {
+      "at": "2026-03-06T08:39:25.840Z",
+      "totalAssets": 4,
+      "totalSignals": 4,
+      "winRate": 100,
+      "avgRr": -0.5,
+      "maxDd": 0,
+      "rows": [
+        {
+          "asset": "PEPEUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 0,
+          "maxDd": 0
+        },
+        {
+          "asset": "ADAUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        },
+        {
+          "asset": "AVAXUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        },
+        {
+          "asset": "ARE",
+          "market": "us",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": -5,
+          "maxDd": 0
+        }
+      ]
+    },
+    {
+      "at": "2026-03-06T10:06:23.389Z",
+      "totalAssets": 3,
+      "totalSignals": 3,
+      "winRate": 100,
+      "avgRr": 1,
+      "maxDd": 0,
+      "rows": [
+        {
+          "asset": "PEPEUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 0,
+          "maxDd": 0
+        },
+        {
+          "asset": "ADAUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        },
+        {
+          "asset": "AVAXUSDT",
+          "market": "crypto",
+          "total": 1,
+          "winRate": 100,
+          "avgRr": 1.5,
+          "maxDd": 0
+        }
+      ]
+    }
+  ]
+}

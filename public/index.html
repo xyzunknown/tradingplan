@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>多策略跨市场资产筛选系统（Beta）</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+  <header class="topbar glass">
+    <div>
+      <h1>多策略跨市场资产筛选系统</h1>
+      <p class="subtitle">币圈 Top100 / 标普500 / 恒生指数 · 双轨共振引擎</p>
+    </div>
+    <div class="actions">
+      <button id="refreshBtn" class="btn primary">刷新扫描</button>
+      <button id="backtestBtn" class="btn">运行回测</button>
+      <button id="pushBtn" class="btn">立即推送</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="panel glass" id="matrixPanel">
+      <div class="panel-head">
+        <h2>实时监控矩阵</h2>
+        <div class="filters">
+          <button class="chip active" data-market="all">全部</button>
+          <button class="chip" data-market="crypto">币圈</button>
+          <button class="chip" data-market="us">美股</button>
+          <button class="chip" data-market="hk">港股</button>
+        </div>
+      </div>
+      <div id="matrixGrid" class="matrix-grid"></div>
+    </section>
+
+    <section class="panel glass" id="detailPanel">
+      <div class="panel-head">
+        <h2>信号详情 / Strategy Radar</h2>
+      </div>
+      <div id="emptyDetail" class="empty">点击左侧标的查看入场、SL、TP 与策略共振细节</div>
+      <div id="detailBody" class="detail hidden">
+        <div class="detail-head">
+          <div>
+            <h3 id="dAsset"></h3>
+            <p id="dMode"></p>
+          </div>
+          <div class="score-badge" id="dScore"></div>
+        </div>
+        <canvas id="radar" width="320" height="280"></canvas>
+        <div class="kv-grid" id="tradePlan"></div>
+        <div class="logic" id="logicText"></div>
+      </div>
+    </section>
+
+    <section class="panel glass" id="botPanel">
+      <div class="panel-head">
+        <h2>机器人管理面板</h2>
+      </div>
+      <div class="switches">
+        <label><input type="checkbox" id="trendSwitch" checked /> 顺势推送</label>
+        <label><input type="checkbox" id="counterSwitch" checked /> 逆势推送</label>
+      </div>
+      <div id="bots" class="bots"></div>
+      <div class="row">
+        <button id="saveConfigBtn" class="btn primary">保存配置</button>
+      </div>
+    </section>
+
+    <section class="panel glass" id="statsPanel">
+      <div class="panel-head">
+        <h2>回测统计墙（近30天模拟）</h2>
+      </div>
+      <div class="stats">
+        <div class="stat-card"><span>真实胜率</span><strong id="winRate">-</strong></div>
+        <div class="stat-card"><span>最大回撤</span><strong id="maxDd">-</strong></div>
+        <div class="stat-card"><span>平均盈亏比</span><strong id="avgRr">-</strong></div>
+      </div>
+      <canvas id="pnlChart" width="520" height="180"></canvas>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
