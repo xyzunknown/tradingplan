@@ -3,81 +3,224 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>多策略跨市场资产筛选系统（Beta）</title>
+  <title>NEXUS SCANNER | 多策略跨市场资产筛选系统</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Orbitron:wght@700;800;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div class="bg-grid"></div>
-  <header class="topbar glass">
-    <div>
-      <h1>多策略跨市场资产筛选系统</h1>
-      <p class="subtitle">币圈 Top100 / 标普500 / 恒生指数 · 双轨共振引擎</p>
+  <div class="bg-glow"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">NS</div>
+      <div>
+        <div class="brand-title">NEXUS SCANNER</div>
+        <div class="brand-subtitle">Multi-Strategy Cross-Market System</div>
+      </div>
     </div>
-    <div class="actions">
-      <button id="refreshBtn" class="btn primary">刷新扫描</button>
-      <button id="backtestBtn" class="btn">运行回测</button>
-      <button id="pushBtn" class="btn">立即推送</button>
+    <nav class="top-tabs">
+      <button class="nav-tab active" data-tab="signals">信号矩阵</button>
+      <button class="nav-tab" data-tab="bots">机器人</button>
+      <button class="nav-tab" data-tab="backtest">回测统计</button>
+    </nav>
+    <div class="status-strip">
+      <span class="status-dot"></span>
+      <span class="status-text">NEXUS ACTIVE</span>
+      <span class="status-time" id="systemTime">--:--:--</span>
+      <span class="status-text" id="nextRefreshText">同步中</span>
     </div>
   </header>
 
-  <main class="layout">
-    <section class="panel glass" id="matrixPanel">
-      <div class="panel-head">
-        <h2>实时监控矩阵</h2>
-        <div class="filters">
-          <button class="chip active" data-market="all">全部</button>
-          <button class="chip" data-market="crypto">币圈</button>
-          <button class="chip" data-market="us">美股</button>
-          <button class="chip" data-market="hk">港股</button>
+  <main class="main-layout">
+    <aside class="sidebar-left panel">
+      <section>
+        <div class="section-label">Universe</div>
+        <div class="market-filter">
+          <button class="filter-btn active" data-market="all">
+            <span>全部市场</span>
+            <span class="count" id="count-all">0</span>
+          </button>
+          <button class="filter-btn" data-market="crypto">
+            <span>Crypto</span>
+            <span class="count" id="count-crypto">0</span>
+          </button>
+          <button class="filter-btn" data-market="us">
+            <span>US Equities</span>
+            <span class="count" id="count-us">0</span>
+          </button>
+          <button class="filter-btn" data-market="hk">
+            <span>HK Equities</span>
+            <span class="count" id="count-hk">0</span>
+          </button>
         </div>
-      </div>
-      <div id="matrixGrid" class="matrix-grid"></div>
-    </section>
+      </section>
 
-    <section class="panel glass" id="detailPanel">
-      <div class="panel-head">
-        <h2>信号详情 / Strategy Radar</h2>
-      </div>
-      <div id="emptyDetail" class="empty">点击左侧标的查看入场、SL、TP 与策略共振细节</div>
-      <div id="detailBody" class="detail hidden">
-        <div class="detail-head">
-          <div>
-            <h3 id="dAsset"></h3>
-            <p id="dMode"></p>
+      <section>
+        <div class="section-label">Threshold</div>
+        <div class="score-filter">
+          <div class="score-slider-label">
+            <span>最小评分</span>
+            <span id="scoreThresholdLabel">0.0</span>
           </div>
-          <div class="score-badge" id="dScore"></div>
+          <input id="scoreThreshold" type="range" min="0" max="30" value="0" />
         </div>
-        <canvas id="radar" width="320" height="280"></canvas>
-        <div class="kv-grid" id="tradePlan"></div>
-        <div class="logic" id="logicText"></div>
-      </div>
+      </section>
+
+      <section>
+        <div class="section-label">Routing</div>
+        <div class="mode-toggle">
+          <label class="toggle-row">
+            <span>顺势推送</span>
+            <input id="trendSwitch" type="checkbox" />
+          </label>
+          <label class="toggle-row">
+            <span>逆势推送</span>
+            <input id="counterSwitch" type="checkbox" />
+          </label>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-label">Actions</div>
+        <div class="action-stack">
+          <button id="refreshBtn" class="action-btn primary">刷新扫描</button>
+          <button id="refreshUniverseBtn" class="action-btn">刷新标的池</button>
+          <button id="pushBtn" class="action-btn">立即推送</button>
+          <button id="saveConfigBtn" class="action-btn">保存配置</button>
+        </div>
+      </section>
+    </aside>
+
+    <section class="center-column">
+      <section class="panel center-panel tab-panel active" data-panel="signals">
+        <div class="panel-head">
+          <div>
+            <h1 class="panel-title">实时信号矩阵</h1>
+            <p class="panel-subtitle">当前后端真实接口输出的跨市场扫描结果</p>
+          </div>
+          <div class="meta-pill-group">
+            <span class="meta-pill">已加载 <strong id="signalTotal">0</strong></span>
+            <span class="meta-pill">确认 <strong id="confirmedTotal">0</strong></span>
+            <span class="meta-pill">更新时间 <strong id="updatedAt">--</strong></span>
+          </div>
+        </div>
+
+        <div class="signal-table-head">
+          <span>资产</span>
+          <span>价格</span>
+          <span>评分</span>
+          <span>结构</span>
+          <span>模式</span>
+          <span>状态</span>
+        </div>
+        <div id="signalList" class="signal-list"></div>
+        <div id="signalEmpty" class="empty-state hidden">当前筛选条件下没有信号。</div>
+      </section>
+
+      <section class="panel center-panel tab-panel" data-panel="bots">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">机器人管理面板</h2>
+            <p class="panel-subtitle">配置保存在当前项目后端，不再使用下载文件里的本地假存储</p>
+          </div>
+        </div>
+        <div id="bots" class="bot-grid"></div>
+      </section>
+
+      <section class="panel center-panel tab-panel" data-panel="backtest">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">回测统计墙</h2>
+            <p class="panel-subtitle" id="statsMeta">正在加载统计数据...</p>
+          </div>
+          <button id="backtestBtn" class="action-btn primary">运行回测</button>
+        </div>
+
+        <div class="backtest-grid">
+          <div class="stat-card">
+            <span>真实胜率</span>
+            <strong id="winRate">-</strong>
+          </div>
+          <div class="stat-card">
+            <span>最大回撤</span>
+            <strong id="maxDd">-</strong>
+          </div>
+          <div class="stat-card">
+            <span>平均盈亏比</span>
+            <strong id="avgRr">-</strong>
+          </div>
+          <div class="stat-card">
+            <span>回测信号数</span>
+            <strong id="backtestCount">-</strong>
+          </div>
+        </div>
+
+        <div class="chart-block">
+          <div class="chart-title">权益曲线</div>
+          <div class="canvas-wrap">
+            <canvas id="pnlChart"></canvas>
+          </div>
+        </div>
+
+        <div class="chart-block">
+          <div class="chart-title">盈亏比分布</div>
+          <div id="rrHistogram" class="histogram"></div>
+        </div>
+      </section>
     </section>
 
-    <section class="panel glass" id="botPanel">
-      <div class="panel-head">
-        <h2>机器人管理面板</h2>
-      </div>
-      <div class="switches">
-        <label><input type="checkbox" id="trendSwitch" checked /> 顺势推送</label>
-        <label><input type="checkbox" id="counterSwitch" checked /> 逆势推送</label>
-      </div>
-      <div id="bots" class="bots"></div>
-      <div class="row">
-        <button id="saveConfigBtn" class="btn primary">保存配置</button>
-      </div>
-    </section>
+    <aside class="sidebar-right">
+      <section class="panel detail-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">策略雷达</h2>
+            <p class="panel-subtitle">点击任意信号查看细节</p>
+          </div>
+        </div>
 
-    <section class="panel glass" id="statsPanel">
-      <div class="panel-head">
-        <h2>回测统计墙（近30天模拟）</h2>
-      </div>
-      <div class="stats">
-        <div class="stat-card"><span>真实胜率</span><strong id="winRate">-</strong></div>
-        <div class="stat-card"><span>最大回撤</span><strong id="maxDd">-</strong></div>
-        <div class="stat-card"><span>平均盈亏比</span><strong id="avgRr">-</strong></div>
-      </div>
-      <canvas id="pnlChart" width="520" height="180"></canvas>
-    </section>
+        <div id="emptyDetail" class="empty-state">选择左侧信号后，这里会显示入场、止损、目标位与共振结构。</div>
+
+        <div id="detailBody" class="detail-body hidden">
+          <div class="detail-top">
+            <div>
+              <div id="dAsset" class="detail-asset"></div>
+              <div id="dMode" class="detail-mode"></div>
+            </div>
+            <div id="dScore" class="score-chip"></div>
+          </div>
+
+          <div class="radar-shell">
+            <canvas id="radar"></canvas>
+          </div>
+
+          <div id="tradePlan" class="kv-grid"></div>
+          <div id="logicText" class="logic-box"></div>
+        </div>
+      </section>
+
+      <section class="panel system-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">系统状态</h2>
+            <p class="panel-subtitle">调度、缓存与最新回测摘要</p>
+          </div>
+        </div>
+        <div id="statusCards" class="status-cards"></div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-head">
+          <div>
+            <h2 class="panel-title">实时日志</h2>
+            <p class="panel-subtitle">按当前信号和调度状态生成</p>
+          </div>
+        </div>
+        <div id="liveLog" class="live-log"></div>
+      </section>
+    </aside>
   </main>
 
   <div id="toast" class="toast"></div>
