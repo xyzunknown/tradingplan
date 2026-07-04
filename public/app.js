@@ -29,8 +29,24 @@ async function req(path, options = {}) {
     headers: { 'Content-Type': 'application/json' },
     ...options
   });
-  const data = await res.json();
-  if (!res.ok || data.ok === false) throw new Error(data.error || 'Request failed');
+  const contentType = (res.headers.get('content-type') || '').toLowerCase();
+  const raw = await res.text();
+  let data = null;
+
+  if (raw) {
+    if (contentType.includes('application/json')) {
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        throw new Error(`接口返回了损坏的 JSON: ${path}`);
+      }
+    } else {
+      const preview = raw.replace(/\s+/g, ' ').trim().slice(0, 80);
+      throw new Error(`接口未返回 JSON: ${path} -> ${preview || 'empty response'}`);
+    }
+  }
+
+  if (!res.ok || (data && data.ok === false)) throw new Error((data && data.error) || `Request failed: ${path}`);
   return data;
 }
 

@@ -9,6 +9,8 @@ const HOST = process.env.HOST || '127.0.0.1';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
+const SERVERLESS_DATA_DIR = path.join('/tmp', 'nexus-scanner-data');
+const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SIGNAL_LOG = path.join(DATA_DIR, 'signal-log.json');
@@ -90,6 +92,14 @@ function json(res, code, payload) {
 }
 
 async function readJson(file, fallback) {
+  const writable = writableDataFile(file);
+  if (writable !== file) {
+    try {
+      const txt = await fsp.readFile(writable, 'utf8');
+      return JSON.parse(txt);
+    } catch {}
+  }
+
   try {
     const txt = await fsp.readFile(file, 'utf8');
     return JSON.parse(txt);
@@ -99,7 +109,14 @@ async function readJson(file, fallback) {
 }
 
 async function writeJson(file, data) {
-  await fsp.writeFile(file, JSON.stringify(data, null, 2));
+  const target = writableDataFile(file);
+  await fsp.mkdir(path.dirname(target), { recursive: true });
+  await fsp.writeFile(target, JSON.stringify(data, null, 2));
+}
+
+function writableDataFile(file) {
+  if (!IS_SERVERLESS) return file;
+  return path.join(SERVERLESS_DATA_DIR, path.basename(file));
 }
 
 function parseBody(req) {
@@ -688,11 +705,38 @@ function simulateTrade(candles, startIdx, signal) {
   return { win: pnl > 0 ? 1 : 0, rr: Number(clamped.toFixed(2)) };
 }
 
+function buildEquityCurve(trades, initialEquity = 100) {
+  const sorted = [...trades].sort((a, b) => a.at - b.at);
+  const curve = [];
+  let equity = initialEquity;
+  let peak = initialEquity;
+  let maxDd = 0;
+
+  curve.push({ at: null, equity: Number(equity.toFixed(2)) });
+
+  for (const trade of sorted) {
+    equity += trade.rr;
+    peak = Math.max(peak, equity);
+    const dd = peak === 0 ? 0 : ((peak - equity) / peak) * 100;
+    maxDd = Math.max(maxDd, dd);
+    curve.push({
+      at: trade.at,
+      equity: Number(equity.toFixed(2))
+    });
+  }
+
+  return {
+    curve,
+    maxDd: Number(maxDd.toFixed(2))
+  };
+}
+
 function runBacktestOnCandles(asset, market, candles, config) {
   const from = Math.max(210, candles.length - 120);
   let total = 0;
   let wins = 0;
   const rrList = [];
+  const trades = [];
   for (let i = from; i < candles.length - 22; i += 1) {
     const slice = candles.slice(0, i + 1);
     const signal = computeSignalFromCandles(asset, market, slice, config);
@@ -701,18 +745,25 @@ function runBacktestOnCandles(asset, market, candles, config) {
     const r = simulateTrade(candles, i, signal);
     wins += r.win;
     rrList.push(r.rr);
+    trades.push({
+      at: candles[i].t,
+      rr: r.rr,
+      win: r.win
+    });
   }
   if (!total) return null;
   const winRate = (wins / total) * 100;
   const avgRr = rrList.reduce((a, b) => a + b, 0) / rrList.length;
-  const maxDd = Math.max(0, 100 - winRate);
+  const equity = buildEquityCurve(trades);
   return {
     asset,
     market,
     total,
+    wins,
     winRate: Number(winRate.toFixed(2)),
     avgRr: Number(avgRr.toFixed(2)),
-    maxDd: Number(maxDd.toFixed(2))
+    maxDd: equity.maxDd,
+    trades
   };
 }
 
@@ -733,18 +784,33 @@ async function runBacktestSnapshot() {
   }
 
   const totalSignals = rows.reduce((a, b) => a + b.total, 0);
-  const weightedWin = rows.reduce((a, b) => a + b.winRate * b.total, 0);
+  const totalWins = rows.reduce((a, b) => a + b.wins, 0);
   const weightedRr = rows.reduce((a, b) => a + b.avgRr * b.total, 0);
-  const maxDd = rows.length ? Math.max(...rows.map(r => r.maxDd)) : 0;
+  const tradeSeries = rows.flatMap(r => (r.trades || []).map(t => ({
+    at: t.at,
+    rr: t.rr,
+    asset: r.asset,
+    market: r.market
+  })));
+  const equity = buildEquityCurve(tradeSeries);
 
   const snapshot = {
     at: nowIso(),
     totalAssets: rows.length,
     totalSignals,
-    winRate: totalSignals ? Number((weightedWin / totalSignals).toFixed(2)) : 0,
+    winRate: totalSignals ? Number(((totalWins / totalSignals) * 100).toFixed(2)) : 0,
     avgRr: totalSignals ? Number((weightedRr / totalSignals).toFixed(2)) : 0,
-    maxDd: Number(maxDd.toFixed(2)),
-    rows: rows.slice(0, 200)
+    maxDd: equity.maxDd,
+    equityCurve: equity.curve.slice(-240),
+    rows: rows.slice(0, 200).map(r => ({
+      asset: r.asset,
+      market: r.market,
+      total: r.total,
+      wins: r.wins,
+      winRate: r.winRate,
+      avgRr: r.avgRr,
+      maxDd: r.maxDd
+    }))
   };
 
   const db = await readJson(BACKTEST_FILE, { snapshots: [] });
@@ -896,35 +962,52 @@ async function schedulerTick() {
 }
 
 async function ensureFiles() {
-  await fsp.mkdir(DATA_DIR, { recursive: true });
-  if (!(await fsp.access(CONFIG_FILE).then(() => true).catch(() => false))) {
+  await fsp.mkdir(IS_SERVERLESS ? SERVERLESS_DATA_DIR : DATA_DIR, { recursive: true });
+  if (!(await fsp.access(writableDataFile(CONFIG_FILE)).then(() => true).catch(() => false))
+      && !(await fsp.access(CONFIG_FILE).then(() => true).catch(() => false))) {
     await writeJson(CONFIG_FILE, DEFAULT_CONFIG);
   }
-  if (!(await fsp.access(SIGNAL_LOG).then(() => true).catch(() => false))) {
+  if (!(await fsp.access(writableDataFile(SIGNAL_LOG)).then(() => true).catch(() => false))
+      && !(await fsp.access(SIGNAL_LOG).then(() => true).catch(() => false))) {
     await writeJson(SIGNAL_LOG, { sent: [] });
   }
-  if (!(await fsp.access(BACKTEST_FILE).then(() => true).catch(() => false))) {
+  if (!(await fsp.access(writableDataFile(BACKTEST_FILE)).then(() => true).catch(() => false))
+      && !(await fsp.access(BACKTEST_FILE).then(() => true).catch(() => false))) {
     await writeJson(BACKTEST_FILE, { snapshots: [] });
   }
 }
 
-async function main() {
-  await ensureFiles();
-  await loadState();
+let initPromise = null;
 
-  const server = http.createServer(async (req, res) => {
-    const parsed = new URL(req.url, `http://${HOST}:${PORT}`);
-    const pathname = parsed.pathname || '/';
-    try {
-      if (pathname.startsWith('/api/')) {
-        await routeApi(req, res, pathname);
-      } else {
-        await serveStatic(req, res, pathname);
-      }
-    } catch (e) {
-      json(res, 500, { ok: false, error: e.message });
+async function initRuntime() {
+  if (!initPromise) {
+    initPromise = (async () => {
+      await ensureFiles();
+      await loadState();
+    })();
+  }
+  return initPromise;
+}
+
+async function handleRequest(req, res) {
+  await initRuntime();
+  const parsed = new URL(req.url, `http://${req.headers.host || `${HOST}:${PORT}`}`);
+  const pathname = parsed.pathname || '/';
+  try {
+    if (pathname.startsWith('/api/')) {
+      await routeApi(req, res, pathname);
+    } else {
+      await serveStatic(req, res, pathname);
     }
-  });
+  } catch (e) {
+    json(res, 500, { ok: false, error: e.message });
+  }
+}
+
+async function main() {
+  await initRuntime();
+
+  const server = http.createServer(handleRequest);
 
   setInterval(() => {
     schedulerTick().catch(err => {
@@ -937,7 +1020,13 @@ async function main() {
   });
 }
 
-main().catch(err => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch(err => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  handleRequest
+};
