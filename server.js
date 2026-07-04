@@ -11,6 +11,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const DATA_DIR = path.join(__dirname, 'data');
 const SERVERLESS_DATA_DIR = path.join('/tmp', 'nexus-scanner-data');
 const IS_SERVERLESS = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+const ALLOW_SYNTHETIC = process.env.ALLOW_SYNTHETIC === '1';
 
 const CONFIG_FILE = path.join(DATA_DIR, 'config.json');
 const SIGNAL_LOG = path.join(DATA_DIR, 'signal-log.json');
@@ -30,6 +31,8 @@ const FALLBACK_UNIVERSE = {
   us: ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'JPM', 'XOM', 'LLY', 'BRK-B'],
   hk: ['0700.HK', '9988.HK', '3690.HK', '1299.HK', '0388.HK', '2318.HK', '1810.HK', '9618.HK', '0005.HK', '0011.HK']
 };
+
+const STABLE_BASES = new Set(['USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'USDE', 'DAI', 'BUSD', 'USD1', 'USDD', 'EURI']);
 
 const DEFAULT_CONFIG = {
   bots: [
@@ -139,6 +142,14 @@ function parseBody(req) {
 
 function normalizeUsSymbol(s) {
   return s.replace('.', '-');
+}
+
+function cryptoBase(symbol) {
+  return symbol.endsWith('USDT') ? symbol.slice(0, -4) : symbol;
+}
+
+function cryptoYahooSymbol(symbol) {
+  return `${cryptoBase(symbol)}-USD`;
 }
 
 async function fetchJson(url, timeoutMs = 15000) {
@@ -285,26 +296,41 @@ function detectBullishDivergence(closes, rsis) {
 async function getCryptoUniverse(force = false) {
   const cache = memory.universes.crypto;
   if (!force && cache && (Date.now() - cache.ts) < 6 * 3600 * 1000) return cache.list;
-  const [tickers, info] = await Promise.all([
-    fetchJson('https://api.binance.com/api/v3/ticker/24hr'),
-    fetchJson('https://api.binance.com/api/v3/exchangeInfo')
-  ]);
+  try {
+    const [tickers, info] = await Promise.all([
+      fetchJson('https://api.binance.com/api/v3/ticker/24hr'),
+      fetchJson('https://api.binance.com/api/v3/exchangeInfo')
+    ]);
 
-  const tradable = new Set(info.symbols
-    .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT' && s.isSpotTradingAllowed)
-    .map(s => s.symbol));
+    const tradable = new Set(info.symbols
+      .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT' && s.isSpotTradingAllowed)
+      .map(s => s.symbol));
 
-  const stableBases = new Set(['USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'USDE', 'DAI', 'BUSD', 'USD1', 'USDD', 'EURI']);
-  const top = tickers
-    .filter(t => tradable.has(t.symbol) && !/(UP|DOWN|BULL|BEAR)$/.test(t.symbol))
-    .filter(t => {
-      if (!t.symbol.endsWith('USDT')) return false;
-      const base = t.symbol.slice(0, -4);
-      return !stableBases.has(base);
-    })
-    .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-    .slice(0, 100)
-    .map(i => i.symbol);
+    const top = tickers
+      .filter(t => tradable.has(t.symbol) && !/(UP|DOWN|BULL|BEAR)$/.test(t.symbol))
+      .filter(t => {
+        if (!t.symbol.endsWith('USDT')) return false;
+        const base = cryptoBase(t.symbol);
+        return /^[A-Z0-9]+$/.test(base) && !STABLE_BASES.has(base);
+      })
+      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
+      .slice(0, 100)
+      .map(i => i.symbol);
+
+    memory.universes.crypto = { ts: Date.now(), list: top };
+    return top;
+  } catch {}
+
+  const markets = await fetchJson('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=100&page=1&sparkline=false');
+  const top = [];
+  const seen = new Set();
+  for (const coin of markets) {
+    const base = String(coin.symbol || '').toUpperCase();
+    if (!/^[A-Z0-9]+$/.test(base) || STABLE_BASES.has(base) || seen.has(base)) continue;
+    seen.add(base);
+    top.push(`${base}USDT`);
+    if (top.length >= 100) break;
+  }
 
   memory.universes.crypto = { ts: Date.now(), list: top };
   return top;
@@ -363,14 +389,75 @@ function sanitizeCandles(candles) {
 async function fetchCryptoCandles(symbol) {
   const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=1d&limit=320`;
   const arr = await fetchJson(url);
-  return sanitizeCandles(arr.map(k => ({
-    t: k[0],
-    open: Number(k[1]),
-    high: Number(k[2]),
-    low: Number(k[3]),
-    close: Number(k[4]),
-    volume: Number(k[5])
-  })));
+  return {
+    sourceName: 'binance',
+    candles: sanitizeCandles(arr.map(k => ({
+      t: k[0],
+      open: Number(k[1]),
+      high: Number(k[2]),
+      low: Number(k[3]),
+      close: Number(k[4]),
+      volume: Number(k[5])
+    })))
+  };
+}
+
+async function fetchCryptoYahooCandles(symbol) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(cryptoYahooSymbol(symbol))}?range=2y&interval=1d&events=div%2Csplits&includeAdjustedClose=true`;
+  const data = await fetchJson(url);
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error('Yahoo crypto chart empty');
+  const ts = result.timestamp || [];
+  const quote = result.indicators?.quote?.[0] || {};
+  const candles = [];
+  for (let i = 0; i < ts.length; i += 1) {
+    const open = quote.open?.[i];
+    const high = quote.high?.[i];
+    const low = quote.low?.[i];
+    const close = quote.close?.[i];
+    const volume = quote.volume?.[i] || 0;
+    if ([open, high, low, close].some(x => x == null || !Number.isFinite(Number(x)))) continue;
+    candles.push({
+      t: ts[i] * 1000,
+      open: Number(open),
+      high: Number(high),
+      low: Number(low),
+      close: Number(close),
+      volume: Number(volume)
+    });
+  }
+  return {
+    sourceName: 'yahoo-crypto',
+    candles: sanitizeCandles(candles)
+  };
+}
+
+async function fetchCryptoCandlesWithFallback(symbol) {
+  try {
+    return await fetchCryptoCandles(symbol);
+  } catch {}
+
+  return fetchCryptoYahooCandles(symbol);
+}
+
+function withSource(candles, sourceName) {
+  Object.defineProperty(candles, 'sourceName', {
+    value: sourceName,
+    enumerable: false,
+    configurable: true
+  });
+  return candles;
+}
+
+function usableCandleCache(cache) {
+  return cache?.candles?.length >= 220 && cache.sourceName && cache.sourceName !== 'synthetic';
+}
+
+async function fetchSyntheticCandles(asset, market) {
+  return {
+    sourceName: 'synthetic',
+    candles: syntheticCandles(asset, market, 320)
+  };
 }
 
 async function fetchYahooCandles(symbol) {
@@ -401,30 +488,36 @@ async function fetchYahooCandles(symbol) {
       volume: Number(v)
     });
   }
-  return sanitizeCandles(candles);
+  return {
+    sourceName: 'yahoo-adjusted',
+    candles: sanitizeCandles(candles)
+  };
 }
 
 async function getCandles(market, asset) {
   const key = `${market}:${asset}`;
   const cache = memory.candles[key];
   const ttl = market === 'crypto' ? 15 * 60 * 1000 : 6 * 3600 * 1000;
-  if (cache && (Date.now() - cache.ts) < ttl) return cache.candles;
-
-  let candles;
-  try {
-    if (market === 'crypto') {
-      candles = await fetchCryptoCandles(asset);
-    } else {
-      candles = await fetchYahooCandles(normalizeUsSymbol(asset));
-    }
-  } catch (e) {
-    if (cache?.candles?.length >= 220) return cache.candles;
-    candles = syntheticCandles(asset, market, 320);
+  if (cache && (Date.now() - cache.ts) < ttl && usableCandleCache(cache)) {
+    return withSource(cache.candles, cache.sourceName);
   }
 
-  if (candles.length < 220) throw new Error(`not enough candles for ${asset}`);
-  memory.candles[key] = { ts: Date.now(), candles };
-  return candles;
+  let data;
+  try {
+    if (market === 'crypto') {
+      data = await fetchCryptoCandlesWithFallback(asset);
+    } else {
+      data = await fetchYahooCandles(normalizeUsSymbol(asset));
+    }
+  } catch (e) {
+    if (usableCandleCache(cache)) return withSource(cache.candles, cache.sourceName);
+    if (!ALLOW_SYNTHETIC) throw e;
+    data = await fetchSyntheticCandles(asset, market);
+  }
+
+  if (data.candles.length < 220) throw new Error(`not enough candles for ${asset}`);
+  memory.candles[key] = { ts: Date.now(), candles: data.candles, sourceName: data.sourceName };
+  return withSource(data.candles, data.sourceName);
 }
 
 function computeSignalFromCandles(asset, market, candles, config) {
@@ -491,7 +584,7 @@ function computeSignalFromCandles(asset, market, candles, config) {
     status,
     scanWindow: MARKET_META[market].scans,
     timestamp: nowIso(),
-    source: market === 'crypto' ? 'binance' : 'yahoo-adjusted'
+    source: candles.sourceName || (market === 'crypto' ? 'crypto-real' : 'yahoo-adjusted')
   };
 }
 
