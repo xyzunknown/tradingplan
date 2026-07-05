@@ -51,6 +51,25 @@ const DEFAULT_CONFIG = {
   scheduleEnabled: true
 };
 
+const BASE_STRATEGY_STATS = {
+  R3: { '1d': { wr: 68, pf: 1.69, fee: 'taker即可' } },
+  ConnorsRSI: { '1d': { wr: 67, pf: 2.17, fee: 'taker即可' } },
+  MDD: { '1d': { wr: 68, pf: 1.39, fee: 'taker即可' } },
+  RSI2: { '1d': { wr: 67, pf: 1.41, fee: 'taker即可' } },
+  CumRSI2: { '1d': { wr: 67, pf: 1.52, fee: 'taker即可' } },
+  IBS: { '1d': { wr: 60, pf: 1.32, fee: 'taker即可' } },
+  'BB%b': { '1d': { wr: 62, pf: 1.41, fee: 'taker即可' } },
+  Breakout20: { '1d': { wr: 50, pf: 4.33, fee: 'taker即可' } },
+  NR7: { '1d': { wr: 42, pf: 1.50, fee: 'taker即可' } },
+  GoldenCross: { '1d': { wr: 42, pf: 7.80, fee: 'taker即可' } },
+  Supertrend: { '1d': { wr: 42, pf: 4.27, fee: 'taker即可' } },
+  'Supertrend-S': { '1d': { wr: 44, pf: 2.18, fee: 'taker即可' } },
+  Breakdown20: { '1d': { wr: 44, pf: 1.57, fee: 'taker即可' } },
+  'TREND-PULLBACK': { '1d': { wr: 52, pf: 1.53, fee: '' } },
+  'SQUEEZE-BREAK': { '1d': { wr: 46, pf: 1.40, fee: '' } },
+  'DEEP-REVERSAL': { '1d': { wr: 50, pf: 1.40, fee: '' } }
+};
+
 const memory = {
   universes: {},
   candles: {},
@@ -296,6 +315,70 @@ function detectBullishDivergence(closes, rsis) {
   return p2 < p1 && r2 > r1;
 }
 
+function arrMin(values, start, end) {
+  return Math.min(...values.slice(Math.max(0, start), Math.max(0, end)));
+}
+
+function arrMax(values, start, end) {
+  return Math.max(...values.slice(Math.max(0, start), Math.max(0, end)));
+}
+
+function stddev(values) {
+  if (!values.length) return 0;
+  const mean = values.reduce((a, b) => a + b, 0) / values.length;
+  return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+}
+
+function connorsRsi(values) {
+  const rsi3 = rsi(values, 3);
+  const streak = [0];
+  for (let i = 1; i < values.length; i += 1) {
+    const sign = Math.sign(values[i] - values[i - 1]);
+    const prev = streak[i - 1];
+    streak.push(sign === 0 ? 0 : (Math.sign(prev) === sign ? prev + sign : sign));
+  }
+  const streakRsi = rsi(streak.map(Number), 2);
+  const roc = values.map((value, index) => index ? (value / values[index - 1]) - 1 : 0);
+  const out = new Array(values.length).fill(null);
+  for (let i = 100; i < values.length; i += 1) {
+    const window = roc.slice(Math.max(1, i - 99), i + 1);
+    const percentile = (window.filter(value => value < roc[i]).length / window.length) * 100;
+    if (rsi3[i] != null && streakRsi[i] != null) out[i] = (rsi3[i] + streakRsi[i] + percentile) / 3;
+  }
+  return out;
+}
+
+function supertrendState(candles, period = 10, multiplier = 3) {
+  if (candles.length < period + 2) return { now: 1, prev: 1 };
+  const atrs = atr(candles, period);
+  let dir = 1;
+  let prev = 1;
+  let fub = null;
+  let flb = null;
+  for (let i = 1; i < candles.length; i += 1) {
+    const hl2 = (candles[i].high + candles[i].low) / 2;
+    const ub = hl2 + multiplier * (atrs[i] || 0);
+    const lb = hl2 - multiplier * (atrs[i] || 0);
+    fub = fub == null ? ub : (candles[i - 1].close <= fub ? Math.min(ub, fub) : ub);
+    flb = flb == null ? lb : (candles[i - 1].close >= flb ? Math.max(lb, flb) : lb);
+    prev = dir;
+    dir = candles[i].close > fub ? 1 : candles[i].close < flb ? -1 : dir;
+  }
+  return { now: dir, prev };
+}
+
+function statFor(type, tf = '1d', dynamicStats = {}) {
+  return dynamicStats?.[type]?.[tf] || BASE_STRATEGY_STATS[type]?.[tf] || BASE_STRATEGY_STATS[type]?.['1d'] || null;
+}
+
+function roundPrice(value) {
+  if (!Number.isFinite(value)) return null;
+  if (Math.abs(value) >= 1000) return Number(value.toFixed(2));
+  if (Math.abs(value) >= 1) return Number(value.toFixed(4));
+  if (Math.abs(value) >= 0.01) return Number(value.toFixed(6));
+  return Number(value.toPrecision(4));
+}
+
 async function getCryptoUniverse(force = false) {
   const cache = memory.universes.crypto;
   if (!force && cache && (Date.now() - cache.ts) < 6 * 3600 * 1000) return cache.list;
@@ -510,7 +593,7 @@ async function getCandles(market, asset) {
     if (market === 'crypto') {
       data = await fetchCryptoCandlesWithFallback(asset);
     } else {
-      data = await fetchYahooCandles(normalizeUsSymbol(asset));
+      data = await fetchYahooCandles(market === 'us' ? normalizeUsSymbol(asset) : asset);
     }
   } catch (e) {
     if (usableCandleCache(cache)) return withSource(cache.candles, cache.sourceName);
@@ -523,72 +606,239 @@ async function getCandles(market, asset) {
   return withSource(data.candles, data.sourceName);
 }
 
-function computeSignalFromCandles(asset, market, candles, config) {
+function computeSignalsFromCandles(asset, market, candles, config, dynamicStats = {}) {
   const closes = candles.map(c => c.close);
-  const ema200 = ema(closes, 200);
+  const highs = candles.map(c => c.high);
+  const lows = candles.map(c => c.low);
+  const opens = candles.map(c => c.open);
+  const ma20 = sma(closes, 20);
+  const ma50 = sma(closes, 50);
+  const ma60 = sma(closes, 60);
+  const ma120 = sma(closes, 120);
+  const ma200 = sma(closes, 200);
+  const rsi2 = rsi(closes, 2);
+  const rsi3 = rsi(closes, 3);
   const rsi14 = rsi(closes, 14);
   const atr14 = atr(candles, 14);
+  const crsi = connorsRsi(closes);
 
   const i = candles.length - 1;
+  if (i < 210) return [];
   const price = closes[i];
-  const e200 = ema200[i] || price;
+  const e200 = ma200[i] || price;
   const trend = price > e200 ? 'trend' : 'counter';
   const deviation = (Math.abs(price - e200) / e200) * 100;
+  const atrv = atr14[i] || price * 0.02;
+  const tf = '1d';
+  const timestamp = nowIso();
+  const source = candles.sourceName || (market === 'crypto' ? 'crypto-real' : 'yahoo-adjusted');
+  const out = [];
 
-  const pivots = nearestPivot(candles, 55);
-  const fib = fibZone(pivots.high, pivots.low);
-  const pa = detectPA(candles);
-  const div = detectBullishDivergence(closes, rsi14);
+  function makeSignal({ type, direction, status, sl = null, tp = null, exitRule = '', why = '', score = null }) {
+    const stat = statFor(type, tf, dynamicStats);
+    const entry = price;
+    const risk = direction === 'SHORT'
+      ? (sl ? sl - entry : null)
+      : (sl ? entry - sl : null);
+    const reward = direction === 'SHORT'
+      ? (tp ? entry - tp : null)
+      : (tp ? tp - entry : null);
+    const rr = risk && reward ? Number((reward / Math.max(0.0001, risk)).toFixed(2)) : '-';
+    out.push({
+      asset,
+      market,
+      tf,
+      type,
+      direction,
+      mode: trend === 'trend' ? '模式I 顺势' : '模式II 逆势',
+      modeKey: trend,
+      price: roundPrice(price),
+      ema200: roundPrice(e200),
+      ma20: roundPrice(ma20[i]),
+      ma60: roundPrice(ma60[i]),
+      ma120: roundPrice(ma120[i]),
+      rsi: Number((rsi14[i] || 50).toFixed(2)),
+      rsi2: rsi2[i] == null ? null : Number(rsi2[i].toFixed(2)),
+      deviation: Number(deviation.toFixed(2)),
+      score: score == null ? (stat?.wr ? Number((stat.wr / 25).toFixed(2)) : 0) : score,
+      scoreBreakdown: { pa: 0, fib: 0, box: 0, divergence: 0 },
+      paType: type,
+      entry: roundPrice(entry),
+      sl: sl == null ? null : roundPrice(sl),
+      tp1: tp == null ? null : roundPrice(tp),
+      tp2: null,
+      rr,
+      status: status === 'CONFIRMED' ? 'confirmed' : 'none',
+      boardStatus: status,
+      exitRule,
+      why,
+      wr: stat?.wr ?? null,
+      pf: stat?.pf ?? null,
+      feeNote: stat?.fee || '',
+      scanWindow: MARKET_META[market].scans,
+      timestamp,
+      source
+    });
+  }
 
-  const modeRule = trend === 'trend'
-    ? (inBand(price, e200, config.tolerancePct) || inBand(price, fib.fib50, config.tolerancePct) || inBand(price, fib.fib618, config.tolerancePct))
-    : (deviation > 15 && (rsi14[i] || 100) < 30);
+  const maSet = [ma20[i], ma60[i], ma120[i]].filter(Number.isFinite);
+  if (maSet.length === 3) {
+    const dispSeries = [];
+    for (let k = 120; k <= i; k += 1) {
+      const set = [ma20[k], ma60[k], ma120[k]].filter(Number.isFinite);
+      dispSeries[k] = set.length === 3 ? ((Math.max(...set) - Math.min(...set)) / closes[k]) : null;
+    }
+    const window = dispSeries.slice(Math.max(120, i - 252), i + 1).filter(x => x != null).sort((a, b) => a - b);
+    const pct = value => window.length ? window.filter(x => x <= value).length / window.length : 1;
+    const recentSqueeze = Array.from({ length: 11 }, (_, idx) => i - 10 + idx)
+      .some(k => k >= 120 && pct(dispSeries[k]) < 0.15);
+    const maxMa = Math.max(...maSet);
+    const minMa = Math.min(...maSet);
+    const prevSet = [ma20[i - 1], ma60[i - 1], ma120[i - 1]].filter(Number.isFinite);
+    if (recentSqueeze && prevSet.length === 3) {
+      const prevMax = Math.max(...prevSet);
+      const prevMin = Math.min(...prevSet);
+      if (price > maxMa && closes[i - 1] <= prevMax) {
+        makeSignal({
+          type: 'SQUEEZE-BREAK',
+          direction: 'BUY',
+          status: 'CONFIRMED',
+          sl: price - 2 * atrv,
+          tp: price + 3 * atrv,
+          why: 'MA20/60/120 聚合后, 收盘突破三线上方。'
+        });
+      } else if (price < minMa && closes[i - 1] >= prevMin) {
+        makeSignal({
+          type: 'SQUEEZE-BREAK',
+          direction: 'SELL',
+          status: 'CONFIRMED',
+          why: 'MA20/60/120 聚合后, 收盘跌破三线下方。'
+        });
+      } else if (pct(dispSeries[i]) < 0.15) {
+        makeSignal({
+          type: 'SQUEEZE',
+          direction: 'WATCH',
+          status: 'MONITOR',
+          why: `MA20/60/120 正在聚合, 当前离散度处于近一年低分位。`
+        });
+      }
+    }
+  }
 
-  const paScore = pa.hit ? 1.0 : 0;
-  const fibScore = (price <= fib.fib50 && price >= fib.fib786) ? 0.5 : 0;
-  const boxScore = (inBand(price, pivots.low, config.tolerancePct) || inBand(price, pivots.high, config.tolerancePct)) ? 0.5 : 0;
-  const divScore = trend === 'counter' && div ? 1.0 : 0;
-  const totalScore = Number((paScore + fibScore + boxScore + divScore).toFixed(2));
+  const tolerance = ((config.v8TolerancePct ?? 2) / 100);
+  if (e200) {
+    if (price > e200) {
+      let touched = false;
+      for (let k = i - 5; k <= i; k += 1) {
+        if (k >= 0 && ma200[k] && lows[k] <= ma200[k] * (1 + tolerance)) touched = true;
+      }
+      const high5 = arrMax(highs, i - 5, i);
+      if (touched && price > high5) {
+        const swingLow = arrMin(lows, i - 10, i + 1);
+        makeSignal({
+          type: 'TREND-PULLBACK',
+          direction: 'BUY',
+          status: 'CONFIRMED',
+          sl: Math.min(price - 2 * atrv, swingLow - 0.5 * atrv),
+          tp: price + 3 * atrv,
+          why: '200MA 上方回踩关键区后, 收盘收复近 5 日高点。'
+        });
+      } else if (touched) {
+        makeSignal({
+          type: 'TREND-PULLBACK',
+          direction: 'WATCH',
+          status: 'MONITOR',
+          why: '已回踩 200MA 关键区, 但尚未收复近 5 日高点。'
+        });
+      }
+    } else {
+      const dev = (price / e200) - 1;
+      if (dev <= -0.15 && (rsi14[i] || 100) < 30) {
+        const priorLow = arrMin(lows, i - 20, i);
+        const priorLowIndex = lows.slice(Math.max(0, i - 20), i).indexOf(priorLow) + Math.max(0, i - 20);
+        const div = lows[i] <= priorLow && rsi14[i] != null && rsi14[priorLowIndex] != null && rsi14[i] > rsi14[priorLowIndex] + 2;
+        const engulf = closes[i] > opens[i] && closes[i - 1] < opens[i - 1] && closes[i] >= opens[i - 1] && opens[i] <= closes[i - 1];
+        makeSignal({
+          type: 'DEEP-REVERSAL',
+          direction: div || engulf ? 'BUY' : 'WATCH',
+          status: div || engulf ? 'CONFIRMED' : 'MONITOR',
+          sl: div || engulf ? price - 2 * atrv : null,
+          tp: div || engulf ? price + 3 * atrv : null,
+          why: `深度超卖: 偏离 200MA ${(dev * 100).toFixed(1)}%, RSI ${Number(rsi14[i]).toFixed(0)}${div ? ', 底背离' : engulf ? ', 看涨吞没' : ', 等反转证据'}。`
+        });
+      }
+      if (ma200[i - 1] && closes[i - 1] > ma200[i - 1] && price < e200) {
+        makeSignal({
+          type: 'MA200-LOST',
+          direction: 'SELL',
+          status: 'CONFIRMED',
+          why: '收盘跌破 200MA, 趋势转空。'
+        });
+      }
+    }
+  }
 
-  const atrv = atr14[i] || (price * 0.02);
-  const wickLow = candles[i].low;
-  const sl = wickLow - 0.005 * atrv;
-  const tp1 = price + (price - sl) * 1.5;
-  const tp2 = trend === 'trend' ? fib.fib1272 : e200;
+  const above = e200 && price > e200;
+  if (above) {
+    if (rsi2[i] != null && rsi2[i - 1] != null && rsi2[i - 2] != null && rsi2[i] < rsi2[i - 1] && rsi2[i - 1] < rsi2[i - 2] && rsi2[i - 2] < 60 && rsi2[i] < 10) {
+      makeSignal({ type: 'R3', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: 'RSI(2)>70 或 10 根后', why: 'RSI(2) 三连降至极低位。' });
+    }
+    if (crsi[i] != null && crsi[i] < 15) {
+      makeSignal({ type: 'ConnorsRSI', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: 'ConnorsRSI>70 或 10 根后', why: `ConnorsRSI=${crsi[i].toFixed(1)} < 15。` });
+    }
+    const downCount = Array.from({ length: 5 }, (_, idx) => i - 4 + idx).filter(k => k > 0 && closes[k] < closes[k - 1]).length;
+    if (downCount >= 4) {
+      makeSignal({ type: 'MDD', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: '收盘破前一根高点 或 RSI2>65 或 10 根后', why: '近 5 根至少 4 根收跌。' });
+    }
+    if (rsi2[i] != null && rsi2[i] < 10) {
+      makeSignal({ type: 'RSI2', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: 'RSI(2)>50 或 10 根后', why: `RSI(2)=${rsi2[i].toFixed(1)} < 10。` });
+    }
+    if (rsi2[i] != null && rsi2[i - 1] != null && rsi2[i] + rsi2[i - 1] < 35) {
+      makeSignal({ type: 'CumRSI2', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: 'RSI(2)>65 或 10 根后', why: `两日 RSI(2) 合计 ${(rsi2[i] + rsi2[i - 1]).toFixed(1)} < 35。` });
+    }
+    const range = highs[i] - lows[i];
+    const ibs = range > 0 ? (price - lows[i]) / range : 0.5;
+    if (ibs < 0.15) {
+      makeSignal({ type: 'IBS', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: 'IBS>0.8 或 10 根后', why: `IBS=${ibs.toFixed(2)} < 0.15。` });
+    }
+    if (ma20[i]) {
+      const sd = stddev(closes.slice(i - 19, i + 1));
+      if (price < ma20[i] - 2 * sd) {
+        makeSignal({ type: 'BB%b', direction: 'BUY', status: 'CONFIRMED', sl: price - 2.5 * atrv, exitRule: '回到布林中轨 或 15 根后', why: '收盘跌破布林下轨。' });
+      }
+    }
+    const high20 = arrMax(highs, i - 20, i);
+    if (price > high20) {
+      makeSignal({ type: 'Breakout20', direction: 'BUY', status: 'CONFIRMED', sl: price - 3 * atrv, exitRule: '3ATR 吊灯跟踪止损', why: '收盘突破 20 期高点。' });
+    }
+    const priorRange = highs[i - 1] - lows[i - 1];
+    const nr7 = Array.from({ length: 6 }, (_, idx) => i - 7 + idx).every(k => k >= 0 && highs[k] - lows[k] >= priorRange);
+    if (nr7 && price > highs[i - 1]) {
+      makeSignal({ type: 'NR7', direction: 'BUY', status: 'CONFIRMED', sl: price - 3 * atrv, exitRule: '3ATR 跟踪 或 20 根后', why: 'NR7 波动收缩后向上突破。' });
+    }
+    if (ma50[i] && ma200[i] && ma50[i - 1] && ma200[i - 1] && ma50[i] > ma200[i] && ma50[i - 1] <= ma200[i - 1]) {
+      makeSignal({ type: 'GoldenCross', direction: 'BUY', status: 'CONFIRMED', sl: price - 3 * atrv, exitRule: '死叉离场', why: 'MA50 金叉 MA200。' });
+    }
+    const st = supertrendState(candles);
+    if (st.now === 1 && st.prev === -1) {
+      makeSignal({ type: 'Supertrend', direction: 'BUY', status: 'CONFIRMED', sl: price - 3 * atrv, exitRule: 'Supertrend 翻空离场', why: 'Supertrend(10,3) 翻多。' });
+    }
+  } else if (e200) {
+    const low20 = arrMin(lows, i - 20, i);
+    if (price < low20) {
+      makeSignal({ type: 'Breakdown20', direction: 'SHORT', status: 'CONFIRMED', sl: price + 3 * atrv, exitRule: '3ATR 吊灯跟踪(向下)', why: '200MA 下方跌破 20 期低点追空。' });
+    }
+    const st = supertrendState(candles);
+    if (st.now === -1 && st.prev === 1) {
+      makeSignal({ type: 'Supertrend-S', direction: 'SHORT', status: 'CONFIRMED', sl: price + 3 * atrv, exitRule: 'Supertrend 翻多平空', why: '200MA 下方 Supertrend 翻空。' });
+    }
+  }
 
-  const status = totalScore >= 2.0 && modeRule ? 'confirmed' : modeRule ? 'warning' : 'none';
+  return out;
+}
 
-  const risk = Math.max(0.0001, (price - sl));
-  const rr = Number(((tp1 - price) / risk).toFixed(2));
-  return {
-    asset,
-    market,
-    mode: trend === 'trend' ? '模式I 顺势' : '模式II 逆势',
-    modeKey: trend,
-    price: Number(price.toFixed(4)),
-    ema200: Number(e200.toFixed(4)),
-    rsi: Number((rsi14[i] || 50).toFixed(2)),
-    deviation: Number(deviation.toFixed(2)),
-    score: totalScore,
-    scoreBreakdown: { pa: paScore, fib: fibScore, box: boxScore, divergence: divScore },
-    paType: pa.type,
-    pivots: { high: Number(pivots.high.toFixed(4)), low: Number(pivots.low.toFixed(4)) },
-    fib: {
-      fib50: Number(fib.fib50.toFixed(4)),
-      fib618: Number(fib.fib618.toFixed(4)),
-      fib786: Number(fib.fib786.toFixed(4)),
-      fib1272: Number(fib.fib1272.toFixed(4))
-    },
-    entry: Number(price.toFixed(4)),
-    sl: Number(sl.toFixed(4)),
-    tp1: Number(tp1.toFixed(4)),
-    tp2: Number(tp2.toFixed(4)),
-    rr: Number(Math.max(-5, Math.min(5, rr)).toFixed(2)),
-    status,
-    scanWindow: MARKET_META[market].scans,
-    timestamp: nowIso(),
-    source: candles.sourceName || (market === 'crypto' ? 'crypto-real' : 'yahoo-adjusted')
-  };
+function computeSignalFromCandles(asset, market, candles, config) {
+  return computeSignalsFromCandles(asset, market, candles, config)[0] || null;
 }
 
 async function mapLimit(items, limit, worker) {
@@ -611,7 +861,13 @@ async function mapLimit(items, limit, worker) {
   return out;
 }
 
-async function buildSignals({ market = 'all', config }) {
+async function latestStrategyStats() {
+  const db = await readJson(BACKTEST_FILE, { snapshots: [] });
+  const latest = db.snapshots?.[db.snapshots.length - 1];
+  return latest?.strategyStats || {};
+}
+
+async function buildSignals({ market = 'all', config, strategyStats = {} }) {
   const mkts = market === 'all' ? ['crypto', 'us', 'hk'] : [market].filter(k => MARKET_META[k]);
   const all = [];
   const errors = [];
@@ -622,19 +878,24 @@ async function buildSignals({ market = 'all', config }) {
     const assets = universe.slice(0, cap);
     const rows = await mapLimit(assets, config.concurrency || 8, async (asset) => {
       const candles = await getCandles(m, asset);
-      return computeSignalFromCandles(asset, m, candles, config);
+      return computeSignalsFromCandles(asset, m, candles, config, strategyStats);
     });
 
     for (const r of rows) {
       if (r && r.__error) {
         errors.push({ market: m, asset: r.__item, error: r.__error });
+      } else if (Array.isArray(r)) {
+        all.push(...r);
       } else if (r) {
         all.push(r);
       }
     }
   }
 
-  return { list: all.sort((a, b) => b.score - a.score), errors };
+  return {
+    list: all.sort((a, b) => (a.status === 'confirmed' ? -1 : 1) - (b.status === 'confirmed' ? -1 : 1) || (b.wr || b.score || 0) - (a.wr || a.score || 0)),
+    errors
+  };
 }
 
 function shouldPush(bot, signal) {
@@ -742,7 +1003,8 @@ async function runPushFlow(reason, market = 'all') {
   const log = await readJson(SIGNAL_LOG, { sent: [] });
   const now = Date.now();
 
-  const { list, errors } = await buildSignals({ market, config });
+  const strategyStats = await latestStrategyStats();
+  const { list, errors } = await buildSignals({ market, config, strategyStats });
   const result = [];
 
   for (const signal of list) {
@@ -801,6 +1063,45 @@ function simulateTrade(candles, startIdx, signal) {
   return { win: pnl > 0 ? 1 : 0, rr: Number(clamped.toFixed(2)) };
 }
 
+function signalHoldingBars(signal) {
+  if (['R3', 'ConnorsRSI', 'MDD', 'RSI2', 'CumRSI2', 'IBS'].includes(signal.type)) return 10;
+  if (['BB%b'].includes(signal.type)) return 15;
+  if (['Breakout20', 'Breakdown20', 'NR7', 'Supertrend', 'Supertrend-S', 'GoldenCross'].includes(signal.type)) return 30;
+  return 20;
+}
+
+function simulateSignalTrade(candles, startIdx, signal) {
+  const end = Math.min(candles.length - 1, startIdx + signalHoldingBars(signal));
+  const entry = signal.entry || signal.price;
+  const sl = signal.sl;
+  const tp = signal.tp1;
+  const direction = signal.direction || 'BUY';
+  for (let i = startIdx + 1; i <= end; i += 1) {
+    const c = candles[i];
+    if (direction === 'SHORT') {
+      if (sl && c.high >= sl) return { win: 0, rr: -1, at: c.t };
+      if (tp && c.low <= tp) {
+        const risk = Math.max(0.0001, sl ? sl - entry : entry * 0.03);
+        return { win: 1, rr: Number(((entry - tp) / risk).toFixed(2)), at: c.t };
+      }
+    } else {
+      if (sl && c.low <= sl) return { win: 0, rr: -1, at: c.t };
+      if (tp && c.high >= tp) {
+        const risk = Math.max(0.0001, entry - sl);
+        return { win: 1, rr: Number(((tp - entry) / risk).toFixed(2)), at: c.t };
+      }
+    }
+  }
+
+  const endClose = candles[end].close;
+  const risk = direction === 'SHORT'
+    ? Math.max(0.0001, sl ? sl - entry : entry * 0.03)
+    : Math.max(0.0001, sl ? entry - sl : entry * 0.03);
+  const pnl = direction === 'SHORT' ? (entry - endClose) / risk : (endClose - entry) / risk;
+  const clamped = Math.max(-3, Math.min(5, pnl));
+  return { win: pnl > 0 ? 1 : 0, rr: Number(clamped.toFixed(2)), at: candles[end].t };
+}
+
 function buildEquityCurve(trades, initialEquity = 100) {
   const sorted = [...trades].sort((a, b) => a.at - b.at);
   const curve = [];
@@ -835,17 +1136,22 @@ function runBacktestOnCandles(asset, market, candles, config) {
   const trades = [];
   for (let i = from; i < candles.length - 22; i += 1) {
     const slice = candles.slice(0, i + 1);
-    const signal = computeSignalFromCandles(asset, market, slice, config);
-    if (signal.status !== 'confirmed') continue;
-    total += 1;
-    const r = simulateTrade(candles, i, signal);
-    wins += r.win;
-    rrList.push(r.rr);
-    trades.push({
-      at: candles[i].t,
-      rr: r.rr,
-      win: r.win
-    });
+    const signals = computeSignalsFromCandles(asset, market, slice, config, {});
+    for (const signal of signals) {
+      if (signal.status !== 'confirmed') continue;
+      total += 1;
+      const r = simulateSignalTrade(candles, i, signal);
+      wins += r.win;
+      rrList.push(r.rr);
+      trades.push({
+        at: r.at || candles[i].t,
+        rr: r.rr,
+        win: r.win,
+        type: signal.type,
+        direction: signal.direction,
+        tf: signal.tf || '1d'
+      });
+    }
   }
   if (!total) return null;
   const winRate = (wins / total) * 100;
@@ -886,18 +1192,51 @@ async function runBacktestSnapshot() {
     at: t.at,
     rr: t.rr,
     asset: r.asset,
-    market: r.market
+    market: r.market,
+    type: t.type,
+    direction: t.direction,
+    tf: t.tf || '1d'
   })));
   const equity = buildEquityCurve(tradeSeries);
+  const totalGrossWin = tradeSeries.reduce((sum, trade) => sum + (trade.rr > 0 ? trade.rr : 0), 0);
+  const totalGrossLoss = tradeSeries.reduce((sum, trade) => sum + (trade.rr < 0 ? Math.abs(trade.rr) : 0), 0);
+  const profitFactor = totalGrossLoss ? Number((totalGrossWin / totalGrossLoss).toFixed(2)) : totalGrossWin ? 99 : 0;
+  const strategyStats = {};
+  for (const trade of tradeSeries) {
+    const type = trade.type || 'UNKNOWN';
+    const tf = trade.tf || '1d';
+    strategyStats[type] ||= {};
+    strategyStats[type][tf] ||= { total: 0, wins: 0, grossWin: 0, grossLoss: 0, rrSum: 0 };
+    const row = strategyStats[type][tf];
+    row.total += 1;
+    row.wins += trade.rr > 0 ? 1 : 0;
+    row.rrSum += trade.rr;
+    if (trade.rr > 0) row.grossWin += trade.rr;
+    if (trade.rr < 0) row.grossLoss += Math.abs(trade.rr);
+  }
+  for (const type of Object.keys(strategyStats)) {
+    for (const tf of Object.keys(strategyStats[type])) {
+      const row = strategyStats[type][tf];
+      row.wr = row.total ? Number(((row.wins / row.total) * 100).toFixed(1)) : 0;
+      row.pf = row.grossLoss ? Number((row.grossWin / row.grossLoss).toFixed(2)) : row.grossWin ? 99 : 0;
+      row.avgRr = row.total ? Number((row.rrSum / row.total).toFixed(2)) : 0;
+      row.fee = BASE_STRATEGY_STATS[type]?.[tf]?.fee || BASE_STRATEGY_STATS[type]?.['1d']?.fee || '';
+      delete row.rrSum;
+      delete row.grossWin;
+      delete row.grossLoss;
+    }
+  }
 
   const snapshot = {
     at: nowIso(),
     totalAssets: rows.length,
     totalSignals,
     winRate: totalSignals ? Number(((totalWins / totalSignals) * 100).toFixed(2)) : 0,
+    profitFactor,
     avgRr: totalSignals ? Number((weightedRr / totalSignals).toFixed(2)) : 0,
     maxDd: equity.maxDd,
     equityCurve: equity.curve.slice(-240),
+    strategyStats,
     rows: rows.slice(0, 200).map(r => ({
       asset: r.asset,
       market: r.market,
@@ -982,8 +1321,35 @@ async function routeApi(req, res, pathname) {
   if (pathname === '/api/signals' && req.method === 'GET') {
     const market = parsed.searchParams.get('market') || 'all';
     const config = await readJson(CONFIG_FILE, DEFAULT_CONFIG);
-    const { list, errors } = await buildSignals({ market, config });
+    const strategyStats = await latestStrategyStats();
+    const { list, errors } = await buildSignals({ market, config, strategyStats });
     json(res, 200, { ok: true, total: list.length, updatedAt: nowIso(), errors, list });
+    return;
+  }
+
+  if (pathname === '/api/candles' && req.method === 'GET') {
+    const market = parsed.searchParams.get('market');
+    const asset = parsed.searchParams.get('asset');
+    if (!MARKET_META[market] || !asset) return json(res, 400, { ok: false, error: 'market/asset required' });
+    try {
+      const candles = await getCandles(market, asset);
+      json(res, 200, {
+        ok: true,
+        market,
+        asset,
+        source: candles.sourceName || (market === 'crypto' ? 'crypto-real' : 'yahoo-adjusted'),
+        candles: candles.map(c => ({
+          t: c.t,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume || 0
+        }))
+      });
+    } catch (e) {
+      json(res, 502, { ok: false, error: e.message });
+    }
     return;
   }
 
