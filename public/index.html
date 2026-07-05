@@ -671,6 +671,8 @@ function apiToBoardSignal(s){
     score:s.score,
     source:s.source,
     mode:s.mode,
+    relatedSignals:s.relatedSignals||[],
+    types:s.types||[],
     desc:`${s.mode||''} · ${s.source||''}`
   };
 }
@@ -750,7 +752,7 @@ function render(){
   document.getElementById('cAll').textContent=SIGNALS.length;
   if(FILTER==='CONFIRMED')list=list.filter(s=>s.status==='CONFIRMED');
   else if(FILTER==='SHORT')list=list.filter(s=>s.dir==='SHORT'||s.dir==='SELL');
-  else if(FILTER==='STRAT')list=list.filter(s=>STRAT_TYPES.has(s.type));
+  else if(FILTER==='STRAT')list=list.filter(s=>STRAT_TYPES.has(s.type)||(s.types||[]).some(t=>STRAT_TYPES.has(t)));
   else if(FILTER!=='ALL')list=list.filter(s=>s.market===FILTER);
   const tb=document.getElementById('rows');
   if(!list.length){tb.innerHTML='<tr><td colspan="11"><div class="empty">当前筛选下暂无信号</div></td></tr>';return;}
@@ -771,55 +773,73 @@ function showChart(ix){
   const chartCfg={
     api:`${location.origin}/api/candles?market=${encodeURIComponent(String(s.market||'').toLowerCase())}&asset=${encodeURIComponent(s.sym)}`,
     symbol:s.sym,
+    market:s.market,
     tf:s.tf,
     price:fmt(s.px)
   };
   document.getElementById('mFrame').srcdoc=`<!doctype html><html><head><meta charset="utf-8"><style>
     *{box-sizing:border-box}html,body{height:100%;width:100%;margin:0;background:#0b0e14;color:#d7dfef;font:12px/1.4 "SF Mono",Consolas,monospace;overflow:hidden}
-    .wrap{height:100%;display:flex;flex-direction:column;padding:12px;background:#0b0e14}
-    .top{display:flex;gap:12px;align-items:center;padding-bottom:8px;color:#7c8aa5}
-    .sym{color:#d7dfef;font-weight:700;font-size:14px}.pill{padding:2px 8px;border-radius:999px;background:#181f2e;color:#5ab0ff}.legend{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap}.l{display:inline-flex;align-items:center;gap:5px}.dot{width:16px;height:3px;border-radius:2px;display:inline-block}
-    #msg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#7c8aa5;background:#0b0e14}
-    canvas{flex:1;width:100%;height:100%;min-height:0;border:1px solid #232c40;border-radius:10px;background:#0f141f}
+    .wrap{height:100%;display:flex;flex-direction:column;background:#0b0e14}
+    .top{display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid #232c40;color:#7c8aa5;flex-wrap:wrap}
+    .sym{color:#d7dfef;font-weight:700;font-size:14px}.pill{padding:3px 9px;border-radius:999px;background:#181f2e;color:#5ab0ff}
+    button{border:1px solid #232c40;background:#181f2e;color:#d7dfef;border-radius:7px;padding:5px 9px;font:inherit;cursor:pointer}
+    button.on{background:#5ab0ff;color:#0b0e14;border-color:#5ab0ff;font-weight:700}button:disabled{opacity:.35;cursor:not-allowed}
+    label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}.tools{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+    #chart{flex:1;min-height:0}.hint{font-size:11px;color:#7c8aa5}#msg{position:absolute;inset:52px 0 0;display:flex;align-items:center;justify-content:center;color:#7c8aa5;background:#0b0e14}
   </style></head><body><div class="wrap">
-    <div class="top"><span class="sym"></span><span class="pill"></span><span id="src"></span><div class="legend">
-      <span class="l"><i class="dot" style="background:#5ab0ff"></i>MA20</span>
-      <span class="l"><i class="dot" style="background:#ffb454"></i>MA60</span>
-      <span class="l"><i class="dot" style="background:#b48cff"></i>MA120</span>
-      <span class="l"><i class="dot" style="background:#7c8aa5"></i>成交量</span>
-    </div></div>
-    <canvas id="chart"></canvas><div id="msg">加载K线...</div>
-  </div><script>
+    <div class="top"><span class="sym"></span><span class="pill" id="tfLabel"></span><span id="src"></span>
+      <button data-tf="4h">4H</button><button data-tf="1d" class="on">1D</button><button data-tf="1w">1W</button>
+      <div class="tools">
+        <label><input type="checkbox" data-ind="ma20" checked>MA20</label>
+        <label><input type="checkbox" data-ind="ma60" checked>MA60</label>
+        <label><input type="checkbox" data-ind="ma120" checked>MA120</label>
+        <label><input type="checkbox" data-ind="vol" checked>成交量</label>
+        <button id="fit">适应</button><span class="hint">滚轮缩放 · 拖动平移</span>
+      </div>
+    </div>
+    <div id="chart"></div><div id="msg">加载K线...</div>
+  </div><script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"><\/script><script>
   const CFG=${JSON.stringify(chartCfg)};
-  const canvas=document.getElementById('chart'),ctx=canvas.getContext('2d'),msg=document.getElementById('msg');
+  const el=document.getElementById('chart'),msg=document.getElementById('msg');
+  const btns=Array.from(document.querySelectorAll('button[data-tf]'));
+  const checks=Array.from(document.querySelectorAll('input[data-ind]'));
   document.querySelector('.sym').textContent=CFG.symbol;
-  document.querySelector('.pill').textContent=CFG.tf+' · 最新 '+CFG.price;
-  function ma(rows,len){return rows.map((_,i)=>i+1<len?null:rows.slice(i-len+1,i+1).reduce((s,r)=>s+r.close,0)/len)}
-  function fmt(v){return v>=1000?v.toFixed(0):v>=1?v.toFixed(2):v.toPrecision(4)}
-  function resize(){const r=canvas.getBoundingClientRect(),d=devicePixelRatio||1;canvas.width=Math.max(300,Math.floor(r.width*d));canvas.height=Math.max(260,Math.floor(r.height*d));ctx.setTransform(d,0,0,d,0,0)}
-  function draw(rows,source){
-    rows=rows.slice(-180);resize();
-    const w=canvas.clientWidth,h=canvas.clientHeight,padL=56,padR=16,padT=22,padB=24,priceH=Math.floor((h-padT-padB)*.72),volTop=padT+priceH+18,volH=h-volTop-padB;
-    ctx.clearRect(0,0,w,h);ctx.fillStyle='#0f141f';ctx.fillRect(0,0,w,h);
-    const m20=ma(rows,20),m60=ma(rows,60),m120=ma(rows,120);
-    const priceVals=rows.flatMap((r,i)=>[r.high,r.low,m20[i],m60[i],m120[i]].filter(Number.isFinite));
-    let lo=Math.min(...priceVals),hi=Math.max(...priceVals);const span=(hi-lo)||1;lo-=span*.04;hi+=span*.04;
-    const x=i=>padL+(i/(rows.length-1))*(w-padL-padR);
-    const y=v=>padT+(hi-v)/(hi-lo)*priceH;
-    const vy=v=>volTop+volH-(v/Math.max(...rows.map(r=>r.volume||0),1))*volH;
-    ctx.strokeStyle='#232c40';ctx.lineWidth=1;ctx.fillStyle='#7c8aa5';ctx.font='11px monospace';
-    for(let g=0;g<=4;g++){const yy=padT+g*priceH/4;ctx.beginPath();ctx.moveTo(padL,yy);ctx.lineTo(w-padR,yy);ctx.stroke();const val=hi-(hi-lo)*g/4;ctx.fillText(fmt(val),8,yy+4)}
-    ctx.beginPath();ctx.moveTo(padL,volTop);ctx.lineTo(w-padR,volTop);ctx.stroke();ctx.fillText('VOL',8,volTop+13);
-    const barW=Math.max(2,(w-padL-padR)/rows.length*.62);
-    rows.forEach((r,i)=>{const xx=x(i),up=r.close>=r.open;ctx.strokeStyle=up?'#2fd67b':'#ff5470';ctx.fillStyle=up?'rgba(47,214,123,.7)':'rgba(255,84,112,.75)';ctx.beginPath();ctx.moveTo(xx,y(r.high));ctx.lineTo(xx,y(r.low));ctx.stroke();const yy=Math.min(y(r.open),y(r.close)),bh=Math.max(1,Math.abs(y(r.close)-y(r.open)));ctx.fillRect(xx-barW/2,yy,barW,bh);ctx.fillStyle=up?'rgba(47,214,123,.26)':'rgba(255,84,112,.26)';ctx.fillRect(xx-barW/2,vy(r.volume||0),barW,volTop+volH-vy(r.volume||0))});
-    function line(vals,color){ctx.strokeStyle=color;ctx.lineWidth=1.7;ctx.beginPath();let started=false;vals.forEach((v,i)=>{if(!Number.isFinite(v))return;const xx=x(i),yy=y(v);if(!started){ctx.moveTo(xx,yy);started=true}else ctx.lineTo(xx,yy)});ctx.stroke()}
-    line(m20,'#5ab0ff');line(m60,'#ffb454');line(m120,'#b48cff');
-    const last=rows[rows.length-1];ctx.strokeStyle='#5ab0ff';ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(padL,y(last.close));ctx.lineTo(w-padR,y(last.close));ctx.stroke();ctx.setLineDash([]);
-    ctx.fillStyle='#d7dfef';ctx.fillText('O '+fmt(last.open)+'  H '+fmt(last.high)+'  L '+fmt(last.low)+'  C '+fmt(last.close),padL,padT-6);
-    document.getElementById('src').textContent='数据源: '+source;msg.style.display='none';
+  if(CFG.market!=='CRYPTO')document.querySelector('button[data-tf="4h"]').disabled=true;
+  let chart,candle,volume,ma20,ma60,ma120,currentTf=CFG.tf||'1d';
+  function rowsToBars(rows){return rows.map(r=>({time:Math.floor(r.t/1000),open:r.open,high:r.high,low:r.low,close:r.close,volume:r.volume||0}))}
+  function maData(bars,len){const out=[];let sum=0;for(let i=0;i<bars.length;i++){sum+=bars[i].close;if(i>=len)sum-=bars[i-len].close;if(i>=len-1)out.push({time:bars[i].time,value:sum/len})}return out}
+  function makeChart(){
+    el.innerHTML='';
+    chart=LightweightCharts.createChart(el,{autoSize:true,layout:{background:{color:'#0f141f'},textColor:'#7c8aa5'},grid:{vertLines:{color:'#1a2133'},horzLines:{color:'#1a2133'}},timeScale:{borderColor:'#232c40',timeVisible:true,secondsVisible:false},rightPriceScale:{borderColor:'#232c40'}});
+    candle=chart.addCandlestickSeries({upColor:'#2fd67b',downColor:'#ff5470',borderVisible:false,wickUpColor:'#2fd67b',wickDownColor:'#ff5470'});
+    volume=chart.addHistogramSeries({priceFormat:{type:'volume'},priceScaleId:'vol',color:'#7c8aa5'});
+    chart.priceScale('vol').applyOptions({scaleMargins:{top:.78,bottom:0}});
+    ma20=chart.addLineSeries({color:'#5ab0ff',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+    ma60=chart.addLineSeries({color:'#ffb454',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+    ma120=chart.addLineSeries({color:'#b48cff',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
   }
-  fetch(CFG.api).then(r=>r.json()).then(j=>{if(!j.ok||!j.candles?.length)throw new Error(j.error||'no data');draw(j.candles,j.source||'-')}).catch(e=>{msg.textContent='K线加载失败: '+e.message});
-  addEventListener('resize',()=>fetch(CFG.api).then(r=>r.json()).then(j=>j.ok&&draw(j.candles,j.source||'-')).catch(()=>{}));
+  function applyVisibility(){
+    const on=Object.fromEntries(checks.map(c=>[c.dataset.ind,c.checked]));
+    ma20.applyOptions({visible:on.ma20});ma60.applyOptions({visible:on.ma60});ma120.applyOptions({visible:on.ma120});volume.applyOptions({visible:on.vol});
+  }
+  async function load(tf){
+    currentTf=tf;msg.style.display='flex';msg.textContent='加载K线...';
+    btns.forEach(b=>b.classList.toggle('on',b.dataset.tf===tf));
+    document.getElementById('tfLabel').textContent=tf.toUpperCase()+' · 最新 '+CFG.price;
+    const res=await fetch(CFG.api+'&tf='+encodeURIComponent(tf));
+    const j=await res.json();if(!j.ok||!j.candles?.length)throw new Error(j.error||'no data');
+    if(!chart)makeChart();
+    const bars=rowsToBars(j.candles);
+    candle.setData(bars);
+    volume.setData(bars.map(b=>({time:b.time,value:b.volume,color:b.close>=b.open?'rgba(47,214,123,.35)':'rgba(255,84,112,.35)'})));
+    ma20.setData(maData(bars,20));ma60.setData(maData(bars,60));ma120.setData(maData(bars,120));
+    document.getElementById('src').textContent='数据源: '+(j.source||'-');
+    applyVisibility();chart.timeScale().fitContent();msg.style.display='none';
+  }
+  btns.forEach(b=>b.onclick=()=>!b.disabled&&load(b.dataset.tf).catch(e=>{msg.textContent='K线加载失败: '+e.message}));
+  checks.forEach(c=>c.onchange=applyVisibility);
+  document.getElementById('fit').onclick=()=>chart&&chart.timeScale().fitContent();
+  load(currentTf).catch(e=>{msg.textContent='K线加载失败: '+e.message});
   <\/script></body></html>`;
   document.getElementById('modal').style.display='block';
 }
@@ -827,6 +847,9 @@ function closeModal(){document.getElementById('modal').style.display='none';
   document.getElementById('mFrame').src='about:blank';}
 function showDetail(ix){
   const s=SIGNALS[ix];
+  const related=(s.relatedSignals||[]).length>1
+    ? `<div class="note"><b>同标的命中:</b> ${s.relatedSignals.map(r=>`${r.type}(${r.direction}${r.wr?`, 胜率${r.wr}% PF${r.pf}`:''})`).join(' · ')}</div>`
+    : '';
   document.getElementById('detail').innerHTML=`
     <div style="font-size:17px;font-weight:700">${s.sym} <span class="tag">${s.market} · ${s.tf}</span>
       <button class="secondary" style="width:auto;padding:3px 12px;margin:0 0 0 6px" onclick="showChart(${ix})">📈 看图</button></div>
@@ -845,6 +868,7 @@ function showDetail(ix){
     ${s.dev!=null?`<div class="row"><span>偏离200MA</span><b>${(s.dev*100).toFixed(1)}%</b></div>`:''}
     ${s.feeNote?`<div class="row"><span>费用要求</span><b>${s.feeNote}</b></div>`:''}
     ${s.mcap?`<div class="row"><span>市值</span><b>${(s.mcap/1e8).toFixed(0)}亿$</b></div>`:''}
+    ${related}
     <div class="note">${s.why}${s.mtf==='down'?'<br><b>⚠️周线逆风:</b> 周线收盘在周线MA20下方,做多信号建议减半仓位或放弃。':''}</div>`;
 }
 

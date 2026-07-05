@@ -29,8 +29,15 @@ const MARKET_META = {
 const FALLBACK_UNIVERSE = {
   crypto: ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'ADAUSDT', 'AVAXUSDT', 'LINKUSDT', 'DOTUSDT'],
   us: ['AAPL', 'MSFT', 'NVDA', 'AMZN', 'GOOGL', 'META', 'JPM', 'XOM', 'LLY', 'BRK-B'],
-  hk: ['0700.HK', '9988.HK', '3690.HK', '1299.HK', '0388.HK', '2318.HK', '1810.HK', '9618.HK', '0005.HK', '0011.HK']
+  hk: ['0700.HK', '9988.HK', '3690.HK', '1299.HK', '0941.HK', '0388.HK', '2318.HK', '0005.HK', '0001.HK', '0002.HK']
 };
+
+const HK_BLUE_CHIPS = [
+  '0700.HK', '9988.HK', '3690.HK', '1299.HK', '0941.HK', '0388.HK', '2318.HK', '0005.HK',
+  '0001.HK', '0002.HK', '0003.HK', '0016.HK', '0027.HK', '0066.HK', '0883.HK', '0857.HK',
+  '0939.HK', '1398.HK', '3988.HK', '3968.HK', '1211.HK', '2020.HK', '2269.HK', '9618.HK',
+  '1024.HK', '1810.HK', '2388.HK', '6862.HK', '9999.HK', '2319.HK'
+];
 
 const STABLE_BASES = new Set([
   'USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'USDE', 'DAI', 'BUSD', 'USD1', 'USDD', 'EURI',
@@ -440,10 +447,7 @@ async function getUsUniverse(force = false) {
 async function getHkUniverse(force = false) {
   const cache = memory.universes.hk;
   if (!force && cache && (Date.now() - cache.ts) < 24 * 3600 * 1000) return cache.list;
-  const html = await fetchText('https://en.wikipedia.org/wiki/Hang_Seng_Index');
-  const m = html.match(/\b\d{4}\.HK\b/g) || [];
-  const uniq = Array.from(new Set(m));
-  const list = uniq.length >= 40 ? uniq : FALLBACK_UNIVERSE.hk;
+  const list = HK_BLUE_CHIPS;
   memory.universes.hk = { ts: Date.now(), list };
   return list;
 }
@@ -472,8 +476,10 @@ function sanitizeCandles(candles) {
     }));
 }
 
-async function fetchCryptoCandles(symbol) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=1d&limit=320`;
+async function fetchCryptoCandles(symbol, interval = '1d', limit = 320) {
+  const safeInterval = ['4h', '1d', '1w'].includes(interval) ? interval : '1d';
+  const safeLimit = Math.max(120, Math.min(800, Number(limit) || 320));
+  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${safeInterval}&limit=${safeLimit}`;
   const arr = await fetchJson(url);
   return {
     sourceName: 'binance',
@@ -546,8 +552,10 @@ async function fetchSyntheticCandles(asset, market) {
   };
 }
 
-async function fetchYahooCandles(symbol) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=2y&interval=1d&events=div%2Csplits&includeAdjustedClose=true`;
+async function fetchYahooCandles(symbol, interval = '1d', range = '2y') {
+  const safeInterval = ['1d', '1wk'].includes(interval) ? interval : '1d';
+  const safeRange = safeInterval === '1wk' ? '5y' : range;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${safeRange}&interval=${safeInterval}&events=div%2Csplits&includeAdjustedClose=true`;
   const data = await fetchJson(url);
   const result = data?.chart?.result?.[0];
   if (!result) throw new Error('Yahoo chart empty');
@@ -603,6 +611,17 @@ async function getCandles(market, asset) {
 
   if (data.candles.length < 220) throw new Error(`not enough candles for ${asset}`);
   memory.candles[key] = { ts: Date.now(), candles: data.candles, sourceName: data.sourceName };
+  return withSource(data.candles, data.sourceName);
+}
+
+async function getChartCandles(market, asset, tf = '1d') {
+  const normalizedTf = ['4h', '1d', '1w'].includes(tf) ? tf : '1d';
+  if (normalizedTf === '1d') return getCandles(market, asset);
+  if (market === 'crypto') {
+    const data = await fetchCryptoCandles(asset, normalizedTf, normalizedTf === '4h' ? 500 : 320);
+    return withSource(data.candles, data.sourceName);
+  }
+  const data = await fetchYahooCandles(market === 'us' ? normalizeUsSymbol(asset) : asset, '1wk', '5y');
   return withSource(data.candles, data.sourceName);
 }
 
@@ -867,6 +886,46 @@ async function latestStrategyStats() {
   return latest?.strategyStats || {};
 }
 
+function signalSortValue(signal) {
+  return (signal.status === 'confirmed' ? 100000 : 0)
+    + (signal.direction === 'BUY' || signal.direction === 'SHORT' ? 10000 : 0)
+    + (Number(signal.wr || 0) * 100)
+    + Number(signal.pf || 0);
+}
+
+function mergeSignalsByAsset(list) {
+  const groups = new Map();
+  for (const signal of list) {
+    const key = `${signal.market}:${signal.asset}:${signal.tf || '1d'}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(signal);
+  }
+
+  return Array.from(groups.values()).map(group => {
+    const ordered = [...group].sort((a, b) => signalSortValue(b) - signalSortValue(a));
+    const primary = { ...ordered[0] };
+    primary.relatedSignals = ordered.map(s => ({
+      type: s.type,
+      direction: s.direction,
+      status: s.status,
+      wr: s.wr,
+      pf: s.pf,
+      entry: s.entry,
+      sl: s.sl,
+      tp1: s.tp1,
+      rr: s.rr,
+      exitRule: s.exitRule,
+      why: s.why
+    }));
+    primary.types = ordered.map(s => s.type);
+    if (ordered.length > 1) {
+      primary.type = `${ordered[0].type} +${ordered.length - 1}`;
+      primary.why = `${ordered[0].why || ''}\n\n同标的还命中: ${ordered.slice(1).map(s => s.type).join(', ')}`;
+    }
+    return primary;
+  });
+}
+
 async function buildSignals({ market = 'all', config, strategyStats = {} }) {
   const mkts = market === 'all' ? ['crypto', 'us', 'hk'] : [market].filter(k => MARKET_META[k]);
   const all = [];
@@ -892,8 +951,9 @@ async function buildSignals({ market = 'all', config, strategyStats = {} }) {
     }
   }
 
+  const merged = mergeSignalsByAsset(all);
   return {
-    list: all.sort((a, b) => (a.status === 'confirmed' ? -1 : 1) - (b.status === 'confirmed' ? -1 : 1) || (b.wr || b.score || 0) - (a.wr || a.score || 0)),
+    list: merged.sort((a, b) => (a.status === 'confirmed' ? -1 : 1) - (b.status === 'confirmed' ? -1 : 1) || (b.wr || b.score || 0) - (a.wr || a.score || 0)),
     errors
   };
 }
@@ -1330,13 +1390,15 @@ async function routeApi(req, res, pathname) {
   if (pathname === '/api/candles' && req.method === 'GET') {
     const market = parsed.searchParams.get('market');
     const asset = parsed.searchParams.get('asset');
+    const tf = parsed.searchParams.get('tf') || '1d';
     if (!MARKET_META[market] || !asset) return json(res, 400, { ok: false, error: 'market/asset required' });
     try {
-      const candles = await getCandles(market, asset);
+      const candles = await getChartCandles(market, asset, tf);
       json(res, 200, {
         ok: true,
         market,
         asset,
+        tf,
         source: candles.sourceName || (market === 'crypto' ? 'crypto-real' : 'yahoo-adjusted'),
         candles: candles.map(c => ({
           t: c.t,
