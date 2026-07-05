@@ -32,7 +32,10 @@ const FALLBACK_UNIVERSE = {
   hk: ['0700.HK', '9988.HK', '3690.HK', '1299.HK', '0388.HK', '2318.HK', '1810.HK', '9618.HK', '0005.HK', '0011.HK']
 };
 
-const STABLE_BASES = new Set(['USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'USDE', 'DAI', 'BUSD', 'USD1', 'USDD', 'EURI']);
+const STABLE_BASES = new Set([
+  'USDT', 'USDC', 'FDUSD', 'TUSD', 'USDP', 'USDE', 'DAI', 'BUSD', 'USD1', 'USDD', 'EURI',
+  'PYUSD', 'USDS', 'WBTC', 'WETH', 'STETH', 'WSTETH', 'WEETH', 'CBBTC', 'LEO', 'BGB'
+]);
 
 const DEFAULT_CONFIG = {
   bots: [
