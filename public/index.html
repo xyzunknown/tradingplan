@@ -788,12 +788,14 @@ function showChart(ix){
     #chart{flex:1;min-height:0}.hint{font-size:11px;color:#7c8aa5}#msg{position:absolute;inset:52px 0 0;display:flex;align-items:center;justify-content:center;color:#7c8aa5;background:#0b0e14}
   </style></head><body><div class="wrap">
     <div class="top"><span class="sym"></span><span class="pill" id="tfLabel"></span><span id="src"></span>
-      <button data-tf="4h">4H</button><button data-tf="1d" class="on">1D</button><button data-tf="1w">1W</button>
+      <button data-tf="15m">15m</button><button data-tf="1h">1H</button><button data-tf="4h">4H</button><button data-tf="1d" class="on">1D</button><button data-tf="1w">1W</button>
       <div class="tools">
         <label><input type="checkbox" data-ind="ma20" checked>MA20</label>
         <label><input type="checkbox" data-ind="ma60" checked>MA60</label>
         <label><input type="checkbox" data-ind="ma120" checked>MA120</label>
         <label><input type="checkbox" data-ind="vol" checked>成交量</label>
+        <label><input type="checkbox" data-ind="macd">MACD</label>
+        <label><input type="checkbox" data-ind="rsi">RSI</label>
         <button id="fit">适应</button><span class="hint">滚轮缩放 · 拖动平移</span>
       </div>
     </div>
@@ -804,10 +806,12 @@ function showChart(ix){
   const btns=Array.from(document.querySelectorAll('button[data-tf]'));
   const checks=Array.from(document.querySelectorAll('input[data-ind]'));
   document.querySelector('.sym').textContent=CFG.symbol;
-  if(CFG.market!=='CRYPTO')document.querySelector('button[data-tf="4h"]').disabled=true;
-  let chart,candle,volume,ma20,ma60,ma120,currentTf=CFG.tf||'1d';
+  let chart,candle,volume,ma20,ma60,ma120,macdHist,macdLine,macdSignal,rsiLine,currentTf=CFG.tf||'1d';
   function rowsToBars(rows){return rows.map(r=>({time:Math.floor(r.t/1000),open:r.open,high:r.high,low:r.low,close:r.close,volume:r.volume||0}))}
   function maData(bars,len){const out=[];let sum=0;for(let i=0;i<bars.length;i++){sum+=bars[i].close;if(i>=len)sum-=bars[i-len].close;if(i>=len-1)out.push({time:bars[i].time,value:sum/len})}return out}
+  function emaVals(values,len){const out=Array(values.length).fill(null),k=2/(len+1);let ema=null;for(let i=0;i<values.length;i++){ema=ema==null?values[i]:values[i]*k+ema*(1-k);if(i>=len-1)out[i]=ema}return out}
+  function macdData(bars){const closes=bars.map(b=>b.close),e12=emaVals(closes,12),e26=emaVals(closes,26),macd=e12.map((v,i)=>v!=null&&e26[i]!=null?v-e26[i]:null),seed=macd.map(v=>v==null?0:v),sig=emaVals(seed,9);const line=[],signal=[],hist=[];for(let i=0;i<bars.length;i++){if(macd[i]==null||sig[i]==null||i<34)continue;line.push({time:bars[i].time,value:macd[i]});signal.push({time:bars[i].time,value:sig[i]});const h=macd[i]-sig[i];hist.push({time:bars[i].time,value:h,color:h>=0?'rgba(47,214,123,.55)':'rgba(255,84,112,.55)'})}return{line,signal,hist}}
+  function rsiData(bars,len=14){const out=[];let gain=0,loss=0;for(let i=1;i<bars.length;i++){const ch=bars[i].close-bars[i-1].close;if(i<=len){gain+=Math.max(0,ch);loss+=Math.max(0,-ch);if(i===len){gain/=len;loss/=len;out.push({time:bars[i].time,value:loss===0?100:100-100/(1+gain/loss)})}}else{gain=(gain*(len-1)+Math.max(0,ch))/len;loss=(loss*(len-1)+Math.max(0,-ch))/len;out.push({time:bars[i].time,value:loss===0?100:100-100/(1+gain/loss)})}}return out}
   function makeChart(){
     el.innerHTML='';
     chart=LightweightCharts.createChart(el,{autoSize:true,layout:{background:{color:'#0f141f'},textColor:'#7c8aa5'},grid:{vertLines:{color:'#1a2133'},horzLines:{color:'#1a2133'}},timeScale:{borderColor:'#232c40',timeVisible:true,secondsVisible:false},rightPriceScale:{borderColor:'#232c40'}});
@@ -817,10 +821,17 @@ function showChart(ix){
     ma20=chart.addLineSeries({color:'#5ab0ff',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
     ma60=chart.addLineSeries({color:'#ffb454',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
     ma120=chart.addLineSeries({color:'#b48cff',lineWidth:2,priceLineVisible:false,lastValueVisible:false});
+    macdHist=chart.addHistogramSeries({priceScaleId:'macd',priceFormat:{type:'price',precision:4,minMove:.0001},lastValueVisible:false,priceLineVisible:false});
+    macdLine=chart.addLineSeries({priceScaleId:'macd',color:'#5ab0ff',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+    macdSignal=chart.addLineSeries({priceScaleId:'macd',color:'#ffb454',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+    rsiLine=chart.addLineSeries({priceScaleId:'rsi',color:'#b48cff',lineWidth:1,priceLineVisible:false,lastValueVisible:false});
+    chart.priceScale('macd').applyOptions({scaleMargins:{top:.72,bottom:.14}});
+    chart.priceScale('rsi').applyOptions({scaleMargins:{top:.58,bottom:.28}});
   }
   function applyVisibility(){
     const on=Object.fromEntries(checks.map(c=>[c.dataset.ind,c.checked]));
     ma20.applyOptions({visible:on.ma20});ma60.applyOptions({visible:on.ma60});ma120.applyOptions({visible:on.ma120});volume.applyOptions({visible:on.vol});
+    macdHist.applyOptions({visible:on.macd});macdLine.applyOptions({visible:on.macd});macdSignal.applyOptions({visible:on.macd});rsiLine.applyOptions({visible:on.rsi});
   }
   async function load(tf){
     currentTf=tf;msg.style.display='flex';msg.textContent='加载K线...';
@@ -833,6 +844,7 @@ function showChart(ix){
     candle.setData(bars);
     volume.setData(bars.map(b=>({time:b.time,value:b.volume,color:b.close>=b.open?'rgba(47,214,123,.35)':'rgba(255,84,112,.35)'})));
     ma20.setData(maData(bars,20));ma60.setData(maData(bars,60));ma120.setData(maData(bars,120));
+    const macd=macdData(bars);macdHist.setData(macd.hist);macdLine.setData(macd.line);macdSignal.setData(macd.signal);rsiLine.setData(rsiData(bars));
     document.getElementById('src').textContent='数据源: '+(j.source||'-');
     applyVisibility();chart.timeScale().fitContent();msg.style.display='none';
   }

@@ -477,7 +477,7 @@ function sanitizeCandles(candles) {
 }
 
 async function fetchCryptoCandles(symbol, interval = '1d', limit = 320) {
-  const safeInterval = ['4h', '1d', '1w'].includes(interval) ? interval : '1d';
+  const safeInterval = ['15m', '1h', '4h', '1d', '1w'].includes(interval) ? interval : '1d';
   const safeLimit = Math.max(120, Math.min(800, Number(limit) || 320));
   const query = `symbol=${encodeURIComponent(symbol)}&interval=${safeInterval}&limit=${safeLimit}`;
   let arr;
@@ -558,8 +558,9 @@ async function fetchSyntheticCandles(asset, market) {
 }
 
 async function fetchYahooCandles(symbol, interval = '1d', range = '2y') {
-  const safeInterval = ['1d', '1wk'].includes(interval) ? interval : '1d';
-  const safeRange = safeInterval === '1wk' ? '5y' : range;
+  const intervalMap = { '15m': '15m', '1h': '60m', '1d': '1d', '1wk': '1wk' };
+  const safeInterval = intervalMap[interval] || '1d';
+  const safeRange = safeInterval === '1wk' ? '5y' : safeInterval === '15m' ? '60d' : safeInterval === '60m' ? '730d' : range;
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${safeRange}&interval=${safeInterval}&events=div%2Csplits&includeAdjustedClose=true`;
   const data = await fetchJson(url);
   const result = data?.chart?.result?.[0];
@@ -620,13 +621,15 @@ async function getCandles(market, asset) {
 }
 
 async function getChartCandles(market, asset, tf = '1d') {
-  const normalizedTf = ['4h', '1d', '1w'].includes(tf) ? tf : '1d';
+  const normalizedTf = ['15m', '1h', '4h', '1d', '1w'].includes(tf) ? tf : '1d';
   if (normalizedTf === '1d') return getCandles(market, asset);
   if (market === 'crypto') {
-    const data = await fetchCryptoCandles(asset, normalizedTf, normalizedTf === '4h' ? 500 : 320);
+    const limit = normalizedTf === '15m' || normalizedTf === '1h' ? 800 : normalizedTf === '4h' ? 500 : 320;
+    const data = await fetchCryptoCandles(asset, normalizedTf, limit);
     return withSource(data.candles, data.sourceName);
   }
-  const data = await fetchYahooCandles(market === 'us' ? normalizeUsSymbol(asset) : asset, '1wk', '5y');
+  const yahooTf = normalizedTf === '1w' ? '1wk' : normalizedTf;
+  const data = await fetchYahooCandles(market === 'us' ? normalizeUsSymbol(asset) : asset, yahooTf);
   return withSource(data.candles, data.sourceName);
 }
 
