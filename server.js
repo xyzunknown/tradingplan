@@ -479,8 +479,13 @@ function sanitizeCandles(candles) {
 async function fetchCryptoCandles(symbol, interval = '1d', limit = 320) {
   const safeInterval = ['4h', '1d', '1w'].includes(interval) ? interval : '1d';
   const safeLimit = Math.max(120, Math.min(800, Number(limit) || 320));
-  const url = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${safeInterval}&limit=${safeLimit}`;
-  const arr = await fetchJson(url);
+  const query = `symbol=${encodeURIComponent(symbol)}&interval=${safeInterval}&limit=${safeLimit}`;
+  let arr;
+  try {
+    arr = await fetchJson(`https://api.binance.com/api/v3/klines?${query}`);
+  } catch (e) {
+    arr = await fetchJson(`https://data-api.binance.vision/api/v3/klines?${query}`);
+  }
   return {
     sourceName: 'binance',
     candles: sanitizeCandles(arr.map(k => ({
