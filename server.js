@@ -688,12 +688,23 @@ function computeSignalsFromCandles(asset, market, candles, config, dynamicStats 
   function makeSignal({ type, direction, status, sl = null, tp = null, exitRule = '', why = '', score = null }) {
     const stat = statFor(type, tf, dynamicStats);
     const entry = price;
-    const risk = direction === 'SHORT'
-      ? (sl ? sl - entry : null)
-      : (sl ? entry - sl : null);
-    const riskPct = risk ? (risk / Math.max(0.0001, entry)) * 100 : null;
     const maxStopPct = Number(config.maxStopPct || DEFAULT_CONFIG.maxStopPct);
-    if (status === 'CONFIRMED' && riskPct != null && (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct > maxStopPct)) return;
+    let effectiveSl = sl;
+    let risk = direction === 'SHORT'
+      ? (effectiveSl ? effectiveSl - entry : null)
+      : (effectiveSl ? entry - effectiveSl : null);
+    const originalRiskPct = risk ? (risk / Math.max(0.0001, entry)) * 100 : null;
+    const stopCapped = status === 'CONFIRMED' && originalRiskPct != null && Number.isFinite(originalRiskPct) && originalRiskPct > maxStopPct;
+    if (status === 'CONFIRMED' && originalRiskPct != null && (!Number.isFinite(originalRiskPct) || originalRiskPct <= 0)) return;
+    if (stopCapped) {
+      effectiveSl = direction === 'SHORT'
+        ? entry * (1 + maxStopPct / 100)
+        : entry * (1 - maxStopPct / 100);
+      risk = direction === 'SHORT'
+        ? effectiveSl - entry
+        : entry - effectiveSl;
+    }
+    const riskPct = risk ? (risk / Math.max(0.0001, entry)) * 100 : null;
     const reward = direction === 'SHORT'
       ? (tp ? entry - tp : null)
       : (tp ? tp - entry : null);
@@ -718,11 +729,13 @@ function computeSignalsFromCandles(asset, market, candles, config, dynamicStats 
       scoreBreakdown: { pa: 0, fib: 0, box: 0, divergence: 0 },
       paType: type,
       entry: roundPrice(entry),
-      sl: sl == null ? null : roundPrice(sl),
+      sl: effectiveSl == null ? null : roundPrice(effectiveSl),
       tp1: tp == null ? null : roundPrice(tp),
       tp2: null,
       rr,
       riskPct: riskPct == null ? null : Number(riskPct.toFixed(2)),
+      originalRiskPct: originalRiskPct == null ? null : Number(originalRiskPct.toFixed(2)),
+      stopCapped,
       status: status === 'CONFIRMED' ? 'confirmed' : 'none',
       boardStatus: status,
       exitRule,

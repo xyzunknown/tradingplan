@@ -670,6 +670,8 @@ function apiToBoardSignal(s){
     rsi:s.rsi,
     score:s.score,
     riskPct:s.riskPct,
+    originalRiskPct:s.originalRiskPct,
+    stopCapped:s.stopCapped,
     mcap:s.marketCap||null,
     marketCapRank:s.marketCapRank||null,
     assetName:s.assetName||'',
@@ -879,6 +881,7 @@ function showDetail(ix){
     <div class="row"><span>现价</span><b>${fmt(s.px)}</b></div>
     ${s.sl?`<div class="row"><span>止损</span><b class="dn">${fmt(s.sl)} (${((s.sl/s.px-1)*100).toFixed(1)}%)</b></div>`:''}
     ${s.riskPct?`<div class="row"><span>止损距离</span><b>${s.riskPct}%</b></div>`:''}
+    ${s.stopCapped?`<div class="row"><span>风控修正</span><b>原止损约 ${s.originalRiskPct}% ，已压到 3%</b></div>`:''}
     ${s.tp?`<div class="row"><span>止盈</span><b class="up">${fmt(s.tp)} (+${((s.tp/s.px-1)*100).toFixed(1)}%)</b></div>`:''}
     ${s.exitRule?`<div class="row"><span>离场</span><b>${s.exitRule}</b></div>`:''}
     ${s.rr!=='-'?`<div class="row"><span>盈亏比</span><b>${s.rr}</b></div>`:''}
