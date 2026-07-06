@@ -54,6 +54,8 @@ const DEFAULT_CONFIG = {
   tolerancePct: 0.2,
   dedupeHours: 24,
   scanCaps: { crypto: 100, us: 120, hk: 80 },
+  minMarketCaps: { crypto: 10_000_000_000, us: 1_000_000_000, hk: 1_000_000_000 },
+  maxStopPct: 18,
   concurrency: 8,
   scheduleEnabled: true
 };
@@ -79,6 +81,7 @@ const BASE_STRATEGY_STATS = {
 
 const memory = {
   universes: {},
+  cryptoMarketMeta: {},
   candles: {},
   scheduler: { runs: {}, lastStart: null, lastEnd: null, lastResult: [] }
 };
@@ -386,46 +389,67 @@ function roundPrice(value) {
   return Number(value.toPrecision(4));
 }
 
-async function getCryptoUniverse(force = false) {
-  const cache = memory.universes.crypto;
+async function getCryptoUniverse(force = false, minMarketCap = DEFAULT_CONFIG.minMarketCaps.crypto) {
+  const minCap = Math.max(0, Number(minMarketCap) || 0);
+  const cacheKey = `crypto:${minCap}`;
+  const cache = memory.universes[cacheKey];
   if (!force && cache && (Date.now() - cache.ts) < 6 * 3600 * 1000) return cache.list;
   try {
-    const [tickers, info] = await Promise.all([
-      fetchJson('https://api.binance.com/api/v3/ticker/24hr'),
-      fetchJson('https://api.binance.com/api/v3/exchangeInfo')
+    const [info, markets] = await Promise.all([
+      fetchJson('https://api.binance.com/api/v3/exchangeInfo'),
+      fetchJson('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false')
     ]);
 
     const tradable = new Set(info.symbols
       .filter(s => s.status === 'TRADING' && s.quoteAsset === 'USDT' && s.isSpotTradingAllowed)
       .map(s => s.symbol));
 
-    const top = tickers
-      .filter(t => tradable.has(t.symbol) && !/(UP|DOWN|BULL|BEAR)$/.test(t.symbol))
-      .filter(t => {
-        if (!t.symbol.endsWith('USDT')) return false;
-        const base = cryptoBase(t.symbol);
-        return /^[A-Z0-9]+$/.test(base) && !STABLE_BASES.has(base);
-      })
-      .sort((a, b) => Number(b.quoteVolume) - Number(a.quoteVolume))
-      .slice(0, 100)
-      .map(i => i.symbol);
+    const top = [];
+    const meta = {};
+    const seen = new Set();
+    for (const coin of markets) {
+      const base = String(coin.symbol || '').toUpperCase();
+      const symbol = `${base}USDT`;
+      if (!/^[A-Z0-9]+$/.test(base) || STABLE_BASES.has(base) || seen.has(symbol)) continue;
+      if (!tradable.has(symbol) || Number(coin.market_cap || 0) < minCap) continue;
+      seen.add(symbol);
+      meta[symbol] = {
+        id: coin.id,
+        name: coin.name,
+        marketCap: Number(coin.market_cap || 0),
+        marketCapRank: coin.market_cap_rank || null
+      };
+      top.push(symbol);
+      if (top.length >= 100) break;
+    }
 
-    memory.universes.crypto = { ts: Date.now(), list: top };
+    memory.cryptoMarketMeta = { ...memory.cryptoMarketMeta, ...meta };
+    memory.universes[cacheKey] = { ts: Date.now(), list: top };
     return top;
   } catch {}
 
-  const markets = await fetchJson('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=volume_desc&per_page=100&page=1&sparkline=false');
+  const markets = await fetchJson('https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=250&page=1&sparkline=false');
   const top = [];
+  const meta = {};
   const seen = new Set();
   for (const coin of markets) {
     const base = String(coin.symbol || '').toUpperCase();
+    const symbol = `${base}USDT`;
     if (!/^[A-Z0-9]+$/.test(base) || STABLE_BASES.has(base) || seen.has(base)) continue;
+    if (Number(coin.market_cap || 0) < minCap) continue;
     seen.add(base);
-    top.push(`${base}USDT`);
+    meta[symbol] = {
+      id: coin.id,
+      name: coin.name,
+      marketCap: Number(coin.market_cap || 0),
+      marketCapRank: coin.market_cap_rank || null
+    };
+    top.push(symbol);
     if (top.length >= 100) break;
   }
 
-  memory.universes.crypto = { ts: Date.now(), list: top };
+  memory.cryptoMarketMeta = { ...memory.cryptoMarketMeta, ...meta };
+  memory.universes[cacheKey] = { ts: Date.now(), list: top };
   return top;
 }
 
@@ -667,6 +691,9 @@ function computeSignalsFromCandles(asset, market, candles, config, dynamicStats 
     const risk = direction === 'SHORT'
       ? (sl ? sl - entry : null)
       : (sl ? entry - sl : null);
+    const riskPct = risk ? (risk / Math.max(0.0001, entry)) * 100 : null;
+    const maxStopPct = Number(config.maxStopPct || DEFAULT_CONFIG.maxStopPct);
+    if (status === 'CONFIRMED' && riskPct != null && (!Number.isFinite(riskPct) || riskPct <= 0 || riskPct > maxStopPct)) return;
     const reward = direction === 'SHORT'
       ? (tp ? entry - tp : null)
       : (tp ? tp - entry : null);
@@ -695,6 +722,7 @@ function computeSignalsFromCandles(asset, market, candles, config, dynamicStats 
       tp1: tp == null ? null : roundPrice(tp),
       tp2: null,
       rr,
+      riskPct: riskPct == null ? null : Number(riskPct.toFixed(2)),
       status: status === 'CONFIRMED' ? 'confirmed' : 'none',
       boardStatus: status,
       exitRule,
@@ -940,12 +968,21 @@ async function buildSignals({ market = 'all', config, strategyStats = {} }) {
   const errors = [];
 
   for (const m of mkts) {
-    const universe = await getUniverse(m);
+    const universe = m === 'crypto'
+      ? await getCryptoUniverse(false, config.minMarketCaps?.crypto ?? DEFAULT_CONFIG.minMarketCaps.crypto)
+      : await getUniverse(m);
     const cap = Math.min(config.scanCaps?.[m] || universe.length, universe.length);
     const assets = universe.slice(0, cap);
     const rows = await mapLimit(assets, config.concurrency || 8, async (asset) => {
       const candles = await getCandles(m, asset);
-      return computeSignalsFromCandles(asset, m, candles, config, strategyStats);
+      const signals = computeSignalsFromCandles(asset, m, candles, config, strategyStats);
+      const meta = m === 'crypto' ? memory.cryptoMarketMeta?.[asset] : null;
+      return meta ? signals.map(s => ({
+        ...s,
+        marketCap: meta.marketCap,
+        marketCapRank: meta.marketCapRank,
+        assetName: meta.name
+      })) : signals;
     });
 
     for (const r of rows) {
@@ -1388,7 +1425,18 @@ async function routeApi(req, res, pathname) {
 
   if (pathname === '/api/signals' && req.method === 'GET') {
     const market = parsed.searchParams.get('market') || 'all';
-    const config = await readJson(CONFIG_FILE, DEFAULT_CONFIG);
+    const savedConfig = await readJson(CONFIG_FILE, DEFAULT_CONFIG);
+    const cryptoMinYi = parsed.searchParams.get('cryptoMinYi');
+    const maxStopPct = parsed.searchParams.get('maxStopPct');
+    const config = {
+      ...savedConfig,
+      minMarketCaps: {
+        ...DEFAULT_CONFIG.minMarketCaps,
+        ...(savedConfig.minMarketCaps || {}),
+        ...(cryptoMinYi == null ? {} : { crypto: Math.max(0, Number(cryptoMinYi) || 0) * 1e8 })
+      },
+      maxStopPct: maxStopPct == null ? (savedConfig.maxStopPct || DEFAULT_CONFIG.maxStopPct) : Math.max(1, Number(maxStopPct) || DEFAULT_CONFIG.maxStopPct)
+    };
     const strategyStats = await latestStrategyStats();
     const { list, errors } = await buildSignals({ market, config, strategyStats });
     json(res, 200, { ok: true, total: list.length, updatedAt: nowIso(), errors, list });

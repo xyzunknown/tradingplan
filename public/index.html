@@ -669,6 +669,10 @@ function apiToBoardSignal(s){
     dev:s.deviation==null?null:s.deviation/100,
     rsi:s.rsi,
     score:s.score,
+    riskPct:s.riskPct,
+    mcap:s.marketCap||null,
+    marketCapRank:s.marketCapRank||null,
+    assetName:s.assetName||'',
     source:s.source,
     mode:s.mode,
     relatedSignals:s.relatedSignals||[],
@@ -685,7 +689,7 @@ async function runScan(){
   try{
     prog(15);log('读取真实数据API /api/signals ...');
     const [sigData,statusData,btData]=await Promise.all([
-      fetchJSON('/api/signals?market=all'),
+      fetchJSON(`/api/signals?market=all&cryptoMinYi=${encodeURIComponent(CFG.mcap)}&maxStopPct=18`),
       fetchJSON('/api/status').catch(e=>({ok:false,error:e})),
       fetchJSON('/api/backtest/latest').catch(e=>({ok:false,error:e}))
     ]);
@@ -874,12 +878,13 @@ function showDetail(ix){
     <span class="tag">${s.type}</span></div>
     <div class="row"><span>现价</span><b>${fmt(s.px)}</b></div>
     ${s.sl?`<div class="row"><span>止损</span><b class="dn">${fmt(s.sl)} (${((s.sl/s.px-1)*100).toFixed(1)}%)</b></div>`:''}
+    ${s.riskPct?`<div class="row"><span>止损距离</span><b>${s.riskPct}%</b></div>`:''}
     ${s.tp?`<div class="row"><span>止盈</span><b class="up">${fmt(s.tp)} (+${((s.tp/s.px-1)*100).toFixed(1)}%)</b></div>`:''}
     ${s.exitRule?`<div class="row"><span>离场</span><b>${s.exitRule}</b></div>`:''}
     ${s.rr!=='-'?`<div class="row"><span>盈亏比</span><b>${s.rr}</b></div>`:''}
     ${s.dev!=null?`<div class="row"><span>偏离200MA</span><b>${(s.dev*100).toFixed(1)}%</b></div>`:''}
     ${s.feeNote?`<div class="row"><span>费用要求</span><b>${s.feeNote}</b></div>`:''}
-    ${s.mcap?`<div class="row"><span>市值</span><b>${(s.mcap/1e8).toFixed(0)}亿$</b></div>`:''}
+    ${s.mcap?`<div class="row"><span>市值</span><b>${(s.mcap/1e8).toFixed(1)}亿$${s.marketCapRank?` · 排名 #${s.marketCapRank}`:''}</b></div>`:''}
     ${related}
     <div class="note">${s.why}${s.mtf==='down'?'<br><b>⚠️周线逆风:</b> 周线收盘在周线MA20下方,做多信号建议减半仓位或放弃。':''}</div>`;
 }
