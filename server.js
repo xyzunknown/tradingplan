@@ -55,7 +55,7 @@ const DEFAULT_CONFIG = {
   dedupeHours: 24,
   scanCaps: { crypto: 100, us: 120, hk: 80 },
   minMarketCaps: { crypto: 10_000_000_000, us: 1_000_000_000, hk: 1_000_000_000 },
-  maxStopPct: 18,
+  maxStopPct: 3,
   concurrency: 8,
   scheduleEnabled: true
 };

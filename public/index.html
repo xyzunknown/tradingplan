@@ -689,7 +689,7 @@ async function runScan(){
   try{
     prog(15);log('读取真实数据API /api/signals ...');
     const [sigData,statusData,btData]=await Promise.all([
-      fetchJSON(`/api/signals?market=all&cryptoMinYi=${encodeURIComponent(CFG.mcap)}&maxStopPct=18`),
+      fetchJSON(`/api/signals?market=all&cryptoMinYi=${encodeURIComponent(CFG.mcap)}&maxStopPct=3`),
       fetchJSON('/api/status').catch(e=>({ok:false,error:e})),
       fetchJSON('/api/backtest/latest').catch(e=>({ok:false,error:e}))
     ]);
